@@ -126,8 +126,16 @@ export function InviteMemberDialog({
         expiresInDays: number;
       };
 
+      let finalUrl = data.url;
+      if (typeof window !== 'undefined' && (finalUrl.includes('example.com') || finalUrl.includes('wacrm.tech'))) {
+        const token = finalUrl.split('/join/')[1];
+        if (token) {
+          finalUrl = `${window.location.origin}/join/${token}`;
+        }
+      }
+
       setResult({
-        url: data.url,
+        url: finalUrl,
         role,
         expiresInDays: data.expiresInDays,
         // Snapshot the account name into the result so the wa.me

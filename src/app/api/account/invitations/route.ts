@@ -93,7 +93,7 @@ function isHostAllowed(
 
 function getBaseUrl(request: Request): string {
   const explicit = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (explicit) return explicit.replace(/\/+$/, "");
+  if (explicit && !explicit.includes("example.com")) return explicit.replace(/\/+$/, "");
 
   const allowList = parseAllowedHosts();
   const forwardedHost = request.headers
