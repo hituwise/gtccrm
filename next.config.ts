@@ -70,7 +70,7 @@ const nextConfig: NextConfig = {
   output: "standalone",
   env: {
     NEXT_PUBLIC_SITE_URL:
-      process.env.NEXT_PUBLIC_SITE_URL || "https://gtccrm-34mpf8dhb-gtc22.vercel.app",
+      process.env.NEXT_PUBLIC_SITE_URL || "https://gtccrm.vercel.app",
   },
 
   /**
