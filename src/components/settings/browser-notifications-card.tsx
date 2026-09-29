@@ -9,6 +9,9 @@ import {
   Smartphone,
   Download,
   CheckCircle2,
+  Copy,
+  Check,
+  Database,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslations } from 'next-intl';
@@ -35,6 +38,44 @@ import {
   sendTestPush,
   isPushSubscribed,
 } from '@/lib/notifications/push-client';
+
+const PUSH_MIGRATION_SQL = `-- 043_push_subscriptions.sql — Run in Supabase SQL Editor
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_push_subscriptions_endpoint UNIQUE (endpoint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_account_user
+  ON public.push_subscriptions(account_id, user_id);
+
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS push_subscriptions_select ON public.push_subscriptions;
+CREATE POLICY push_subscriptions_select ON public.push_subscriptions
+  FOR SELECT USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS push_subscriptions_insert ON public.push_subscriptions;
+CREATE POLICY push_subscriptions_insert ON public.push_subscriptions
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS push_subscriptions_update ON public.push_subscriptions;
+CREATE POLICY push_subscriptions_update ON public.push_subscriptions
+  FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS push_subscriptions_delete ON public.push_subscriptions;
+CREATE POLICY push_subscriptions_delete ON public.push_subscriptions
+  FOR DELETE USING (auth.uid() = user_id);
+
+GRANT ALL ON TABLE public.push_subscriptions TO service_role;
+GRANT ALL ON TABLE public.push_subscriptions TO authenticated;`;
 
 function subscribePermission(onChange: () => void): () => void {
   window.addEventListener('focus', onChange);
@@ -67,6 +108,8 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
   const [hasPush, setHasPush] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
+  const [dbError, setDbError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const supported = permission !== 'unsupported';
   const checked = enabled && permission === 'granted';
@@ -90,7 +133,16 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
       setHasPush(subscribed);
       if (!subscribed && enabled && permission === 'granted') {
         const sub = await subscribeToPush();
-        if (sub.success) setHasPush(true);
+        if (sub.success) {
+          setHasPush(true);
+          setDbError(null);
+        } else if (
+          sub.error?.includes('push_subscriptions') ||
+          sub.error?.includes('schema cache') ||
+          sub.error?.includes('does not exist')
+        ) {
+          setDbError(sub.error);
+        }
       }
     });
 
@@ -114,8 +166,16 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
         const sub = await subscribeToPush();
         if (sub.success) {
           setHasPush(true);
+          setDbError(null);
           toast.success('Push notifications active on this device!');
         } else if (sub.error) {
+          if (
+            sub.error.includes('push_subscriptions') ||
+            sub.error.includes('schema cache') ||
+            sub.error.includes('does not exist')
+          ) {
+            setDbError(sub.error);
+          }
           toast.error(sub.error);
         }
       } finally {
@@ -137,7 +197,17 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
         const sub = await subscribeToPush();
         if (sub.success) {
           setHasPush(true);
+          setDbError(null);
           toast.success('Push notifications active on this device!');
+        } else if (sub.error) {
+          if (
+            sub.error.includes('push_subscriptions') ||
+            sub.error.includes('schema cache') ||
+            sub.error.includes('does not exist')
+          ) {
+            setDbError(sub.error);
+          }
+          toast.error(sub.error);
         }
       } else if (result === 'denied') {
         toast.error(t('permissionDeniedToast'), { description: t('deniedHint') });
@@ -162,6 +232,17 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
     }
   };
 
+  const copySql = async () => {
+    try {
+      await navigator.clipboard.writeText(PUSH_MIGRATION_SQL);
+      setCopied(true);
+      toast.success('SQL copied to clipboard! Paste into Supabase SQL Editor.');
+      setTimeout(() => setCopied(false), 3000);
+    } catch {
+      toast.error('Could not copy to clipboard.');
+    }
+  };
+
   const sendTest = async () => {
     setTesting(true);
     try {
@@ -169,11 +250,11 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
       try {
         new Notification(t('testTitle'), {
           body: t('testBody'),
-          icon: '/icon',
+          icon: '/icon-192.png',
           tag: 'wacrm-test-notification',
         });
       } catch {
-        // Fall through to server push
+        // Ignored if browser requires Service Worker
       }
 
       // 2. Ensure device has an active push subscription
@@ -181,7 +262,15 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
         const subRes = await subscribeToPush();
         if (subRes.success) {
           setHasPush(true);
+          setDbError(null);
         } else if (subRes.error) {
+          if (
+            subRes.error.includes('push_subscriptions') ||
+            subRes.error.includes('schema cache') ||
+            subRes.error.includes('does not exist')
+          ) {
+            setDbError(subRes.error);
+          }
           toast.error(subRes.error);
           return;
         }
@@ -192,6 +281,13 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
       if (pushRes.success) {
         toast.success('Push alert delivered! Check your notification tray.');
       } else if (pushRes.message) {
+        if (
+          pushRes.message.includes('push_subscriptions') ||
+          pushRes.message.includes('schema cache') ||
+          pushRes.message.includes('does not exist')
+        ) {
+          setDbError(pushRes.message);
+        }
         toast.info(pushRes.message);
       } else {
         toast.info(t('testTitle'), { description: t('testBody') });
@@ -218,7 +314,7 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
           {t('title')} &amp; Mobile Push
         </CardTitle>
         <CardDescription>
-          Get instant alerts for new WhatsApp lead messages on desktop and mobile phones — even when the app is in the background.
+          Get instant alerts for new WhatsApp lead messages on desktop and mobile phones — even when the app is closed.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -262,6 +358,43 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
               </p>
             )}
 
+            {/* Supabase SQL Migration Warning Box */}
+            {dbError && (
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 space-y-3 text-xs text-red-900 dark:text-red-200">
+                <div className="flex items-start gap-2">
+                  <Database className="mt-0.5 size-4 shrink-0 text-red-500" />
+                  <div className="space-y-1">
+                    <p className="font-semibold text-red-800 dark:text-red-300">
+                      Supabase Setup Required (1 Step)
+                    </p>
+                    <p className="leading-relaxed">
+                      The table <code className="rounded bg-red-200/50 dark:bg-red-950/60 px-1 py-0.5">push_subscriptions</code> does not exist in your Supabase database yet. Run the SQL snippet below in your Supabase SQL Editor to finish setting up push alerts:
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={copySql}
+                    className="gap-1.5 border-red-300 dark:border-red-800 bg-background text-foreground"
+                  >
+                    {copied ? <Check className="size-3.5 text-green-500" /> : <Copy className="size-3.5" />}
+                    {copied ? 'Copied to Clipboard!' : 'Copy SQL Query'}
+                  </Button>
+                  <a
+                    href="https://supabase.com/dashboard"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-primary underline hover:text-primary/80"
+                  >
+                    Open Supabase Dashboard &rarr;
+                  </a>
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <Button
                 type="button"
@@ -297,7 +430,7 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
                   </p>
                   <ul className="text-xs text-muted-foreground list-disc list-inside space-y-0.5 pt-1">
                     <li>
-                      <strong>Android (Chrome):</strong> Tap the 3 dots (⋮) &rarr; <span className="text-foreground">"Install app"</span> or "Add to Home screen".
+                      <strong>Android (Chrome):</strong> Tap the 3 dots (⋮) &rarr; <span className="text-foreground">"Install app"</span> (or "Add to Home screen").
                     </li>
                     <li>
                       <strong>iPhone (Safari):</strong> Tap the Share button (&uarr;) &rarr; <span className="text-foreground">"Add to Home Screen"</span>.
