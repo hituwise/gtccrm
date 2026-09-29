@@ -569,24 +569,32 @@ describe("send_buttons / send_list interpolate {{vars.*}} (#553)", () => {
     ]);
   });
 
-  it("reprompt re-sends the interactive node with the same interpolation", async () => {
-    // Run already suspended on the buttons node with the var captured;
-    // the customer types instead of tapping → fallback → reprompt.
+  it("does not consume normal text when suspended on an interactive buttons node", async () => {
+    // Run suspended on the buttons node; customer types normal text instead
+    // of tapping. Flow does NOT consume normal text, allowing Automations and AI to reply.
     h.state.activeRuns = [
       { ...RUN, current_node_key: "choose", vars: { name: "Alice" } },
     ];
 
     const result = await dispatch(text("huh?"));
 
-    expect(result).toMatchObject({ consumed: true, outcome: "fallback_fired" });
-    expect(h.sendButtons).toHaveBeenCalledTimes(1);
-    expect(h.sendButtons.mock.calls[0][0].bodyText).toBe(
-      "Hi Alice, please choose an option.",
-    );
-    expect(h.sendButtons.mock.calls[0][0].buttons[0]).toEqual({
-      id: "yes",
-      title: "Yes, Alice",
+    expect(result).toMatchObject({ consumed: false, outcome: "no_match" });
+    expect(h.sendButtons).not.toHaveBeenCalled();
+  });
+
+  it("consumes expected interactive button reply when suspended on buttons node", async () => {
+    h.state.activeRuns = [
+      { ...RUN, current_node_key: "choose", vars: { name: "Alice" } },
+    ];
+
+    const result = await dispatch({
+      kind: "interactive_reply",
+      reply_id: "yes",
+      reply_title: "Yes, Alice",
+      meta_message_id: "wamid.tap1",
     });
+
+    expect(result.consumed).toBe(true);
   });
 
   it("a send failure (e.g. an interpolated title over Meta's limit) is logged and fails the run", async () => {

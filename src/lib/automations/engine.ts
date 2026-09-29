@@ -56,6 +56,12 @@ export interface DispatchInput {
   context?: AutomationContext
 }
 
+export interface RunAutomationsResult {
+  executed: boolean
+  count: number
+  sentCustomerMessage: boolean
+}
+
 /**
  * Fire all active automations matching the given trigger for an
  * account.
@@ -64,7 +70,15 @@ export interface DispatchInput {
  * All errors are caught and logged; per-automation failures are
  * recorded into automation_logs with status='failed'.
  */
-export async function runAutomationsForTrigger(input: DispatchInput): Promise<void> {
+export async function runAutomationsForTrigger(
+  input: DispatchInput
+): Promise<RunAutomationsResult> {
+  const result: RunAutomationsResult = {
+    executed: false,
+    count: 0,
+    sentCustomerMessage: false,
+  }
+
   try {
     const db = supabaseAdmin()
 
@@ -84,11 +98,11 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
         .maybeSingle()
       if (ownErr) {
         console.error('[automations] contact ownership check failed:', ownErr)
-        return
+        return result
       }
       if (!owned) {
         console.warn('[automations] contact not in account, refusing dispatch', input.contactId)
-        return
+        return result
       }
     }
 
@@ -101,14 +115,22 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
 
     if (error) {
       console.error('[automations] fetch failed:', error)
-      return
+      return result
     }
-    if (!automations || automations.length === 0) return
+    if (!automations || automations.length === 0) return result
 
     for (const automation of automations as Automation[]) {
       if (!triggerMatches(automation, input.context)) continue
       try {
-        await executeAutomation(automation, input)
+        console.info(
+          `[AI_DECISION] [AUTOMATION_EXECUTED] (trigger=${input.triggerType}, automation_id=${automation.id})`
+        )
+        const execRes = await executeAutomation(automation, input)
+        result.executed = true
+        result.count++
+        if (execRes?.sentCustomerMessage) {
+          result.sentCustomerMessage = true
+        }
       } catch (err) {
         console.error('[automations] execute failed:', automation.id, err)
       }
@@ -116,6 +138,8 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
   } catch (err) {
     console.error('[automations] dispatch failed:', err)
   }
+
+  return result
 }
 
 /**
@@ -173,30 +197,23 @@ export async function resumePendingExecution(pending: {
 // Internal execution
 // ------------------------------------------------------------
 
-async function executeAutomation(automation: Automation, input: DispatchInput) {
+const SEND_STEP_TYPES = new Set(['send_message', 'send_template', 'send_buttons', 'send_list'])
+
+async function executeAutomation(
+  automation: Automation,
+  input: DispatchInput
+): Promise<{ sentCustomerMessage: boolean }> {
   const db = supabaseAdmin()
 
   const { data: log, error: logErr } = await db
     .from('automation_logs')
     .insert({
       automation_id: automation.id,
-      // Tenancy: matches automation.account_id (NOT NULL post-017).
       account_id: automation.account_id,
-      // Audit: keeps the historical "author of this automation"
-      // pointer so logs still attribute to the right user even
-      // after teammates join the account.
       user_id: automation.user_id,
       contact_id: input.contactId ?? null,
       trigger_event: input.triggerType,
       steps_executed: [],
-      // Seeded pessimistically. The row is written BEFORE any step runs,
-      // and every terminal path below overwrites it (`appendResults` at
-      // the outermost scope, or `finalizeLog`). Seeding 'success' meant a
-      // run that died mid-flight — the process frozen, the pod recycled —
-      // left a permanent `status: 'success'` with `steps_executed: []`,
-      // indistinguishable from an automation that genuinely had nothing
-      // to do. 'failed' inverts that: the status only becomes success if
-      // execution actually reached the end. See issue #409.
       status: 'failed',
     })
     .select()
@@ -204,10 +221,10 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
 
   if (logErr || !log) {
     console.error('[automations] cannot create log:', logErr)
-    return
+    return { sentCustomerMessage: false }
   }
 
-  await executeStepsFrom({
+  const { sentCustomerMessage } = await executeStepsFrom({
     automation,
     contactId: input.contactId ?? null,
     context: input.context ?? {},
@@ -218,16 +235,14 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
     triggerEvent: input.triggerType,
   })
 
-  // Atomic counter update via the SQL function from migration 007.
-  // Doing this with a client-side read-modify-write raced when the
-  // same automation fired for two contacts simultaneously — both
-  // would read N and both write N+1, losing one count permanently.
   const { error: rpcErr } = await db.rpc('increment_automation_execution_count', {
     p_automation_id: automation.id,
   })
   if (rpcErr) {
     console.error('[automations] increment counter failed:', rpcErr)
   }
+
+  return { sentCustomerMessage }
 }
 
 interface ExecuteArgs {
@@ -241,7 +256,10 @@ interface ExecuteArgs {
   triggerEvent: string
 }
 
-async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
+async function executeStepsFrom(
+  args: ExecuteArgs
+): Promise<{ sentCustomerMessage: boolean }> {
+  let sentCustomerMessage = false
   const db = supabaseAdmin()
 
   const baseQuery = db
@@ -260,13 +278,13 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
 
   if (stepsErr) {
     await finalizeLog(args.logId, 'failed', stepsErr.message)
-    return
+    return { sentCustomerMessage: false }
   }
   if (!steps || steps.length === 0) {
     if (args.parentStepId === null && args.logId) {
       await finalizeLog(args.logId, 'success', null)
     }
-    return
+    return { sentCustomerMessage: false }
   }
 
   const results: AutomationLogStepResult[] = []
@@ -301,7 +319,7 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
       })
       status = 'partial'
       await appendResults(args.logId, results, status, errorMessage)
-      return
+      return { sentCustomerMessage }
     }
 
     try {
@@ -316,14 +334,21 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         })
         // Recurse into the chosen branch at position 0 (children use their
         // own ordering within the branch scope).
-        await executeStepsFrom({
+        const subRes = await executeStepsFrom({
           ...args,
           parentStepId: step.id,
           branch: taken ? 'yes' : 'no',
           startPosition: 0,
           logId: args.logId,
         })
+        if (subRes.sentCustomerMessage) {
+          sentCustomerMessage = true
+        }
         continue
+      }
+
+      if (SEND_STEP_TYPES.has(step.step_type)) {
+        sentCustomerMessage = true
       }
 
       const detail = await runStep(step, args)
@@ -353,6 +378,8 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
     // Nested branch — just append results; parent scope decides final status.
     await appendResults(args.logId, results, null, errorMessage)
   }
+
+  return { sentCustomerMessage }
 }
 
 async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string> {

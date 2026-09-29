@@ -18,6 +18,8 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { isOptOutMessage } from '@/lib/whatsapp/compliance'
+import { logDecision } from '@/lib/ai/decision-logger'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -858,52 +860,67 @@ async function processMessage(
   await flagBroadcastReplyIfAny(accountId, contactRecord.id)
 
   // ============================================================
-  // Flow runner dispatch.
-  //
-  // If the runner consumes the message (it either advanced an active
-  // run or started a new one), we suppress the `new_message_received`
-  // + `keyword_match` automation triggers for this inbound. Customer
-  // is navigating the bot menu, not sending a fresh trigger word
-  // that should fork into automations.
-  //
-  // The relationship-level triggers (`new_contact_created`,
-  // `first_inbound_message`) still fire even when consumed — those
-  // are about WHO is messaging, not what they said.
-  //
-  // Awaited (not fire-and-forget) because we need the `consumed`
-  // result before deciding whether to dispatch automations. The
-  // runner has its own try/catch and never throws. Accounts with
-  // no active flows take the runner's early-exit "no_match" path
-  // basically for free (one indexed SELECT for the active run).
+  // Inbound Message Orchestration
+  // 1. Compliance check (STOP / UNSUBSCRIBE / CANCEL)
+  // 2. Flows dispatch (Flows consume only expected input or active trigger)
+  // 3. Automations dispatch (Tags, updates, notifications do not disable AI)
+  // 4. AI dispatch (Evaluates text and unhandled interactive events)
   // ============================================================
-  const flowResult = await dispatchInboundToFlows({
-    accountId,
-    userId: configOwnerUserId,
-    contactId: contactRecord.id,
-    conversationId: conversation.id,
-    message:
-      interactiveReplyId
-        ? {
-            kind: 'interactive_reply',
-            reply_id: interactiveReplyId,
-            reply_title: contentText ?? '',
-            meta_message_id: message.id,
-          }
-        : {
-            kind: 'text',
-            text: contentText ?? message.text?.body ?? '',
-            meta_message_id: message.id,
-          },
-    isFirstInboundMessage,
-  })
-  const flowConsumed = flowResult.consumed
-
-  // Fire any automations that react to this webhook event. All dispatches
-  // run here (not earlier) so the contact, conversation, and inbound
-  // message all exist before any step — including send_message — runs.
-  // Fire-and-forget: a slow or failing automation must not block the
-  // webhook's 200 OK response to Meta.
   const inboundText = contentText ?? message.text?.body ?? ''
+  const isOptOut = isOptOutMessage(inboundText)
+
+  if (isOptOut) {
+    logDecision('AI_COMPLIANCE_BLOCKED', {
+      conversationId: conversation.id,
+      accountId,
+      reason: 'opt_out',
+    })
+    await supabaseAdmin()
+      .from('conversations')
+      .update({
+        ai_autoreply_disabled: true,
+        ai_handoff_summary: 'Contact opted out (compliance keyword).',
+      })
+      .eq('id', conversation.id)
+  }
+
+  let flowConsumed = false
+  if (!isOptOut) {
+    const flowResult = await dispatchInboundToFlows({
+      accountId,
+      userId: configOwnerUserId,
+      contactId: contactRecord.id,
+      conversationId: conversation.id,
+      message:
+        interactiveReplyId
+          ? {
+              kind: 'interactive_reply',
+              reply_id: interactiveReplyId,
+              reply_title: contentText ?? '',
+              meta_message_id: message.id,
+            }
+          : {
+              kind: 'text',
+              text: inboundText,
+              meta_message_id: message.id,
+            },
+      isFirstInboundMessage,
+    })
+    flowConsumed = flowResult.consumed
+    if (flowConsumed) {
+      logDecision('FLOW_CONSUMED', {
+        conversationId: conversation.id,
+        accountId,
+        flowRunId: flowResult.flow_run_id,
+        outcome: flowResult.outcome,
+      })
+    }
+  }
+
+  // Automations dispatch.
+  // Active automations do NOT globally disable AI.
+  // We record whether an automation sent an outbound customer message.
+  let automationRepliedToCustomer = false
   const automationTriggers: (
     | 'new_contact_created'
     | 'first_inbound_message'
@@ -911,64 +928,59 @@ async function processMessage(
     | 'keyword_match'
     | 'interactive_reply'
   )[] = []
-  // Content-level triggers are suppressed when a flow consumed the
-  // message — see the comment block above.
-  if (!flowConsumed) {
+
+  if (!flowConsumed && !isOptOut) {
     automationTriggers.push('new_message_received', 'keyword_match')
-    // Interactive tap → fire the interactive_reply trigger too (only
-    // meaningful when a button/list reply actually arrived). Enables
-    // automation-only chained menus; when a Flow owns the menu it will
-    // have consumed the reply and this is skipped.
     if (interactiveReplyId) {
       automationTriggers.push('interactive_reply')
     }
   }
-  // new_contact_created fires only when the webhook just auto-created the
-  // contact row. first_inbound_message fires whenever this is the contact's
-  // first-ever customer-sent message — a superset that also catches
-  // manually-imported contacts sending for the first time. We dispatch both
-  // so users can pick whichever semantic they want; an automation that
-  // listens to only one trigger runs only when that trigger matches.
   if (contactOutcome.wasCreated) automationTriggers.unshift('new_contact_created')
   if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
-  // Awaited — not fire-and-forget. We're inside the route's `after()`
-  // block, which only keeps the function alive for promises it can see, so
-  // a detached dispatch can be frozen part-way through: the log row is
-  // inserted, then the steps never run. That is issue #301's failure mode
-  // recurring one level down, and it's what issue #409 reported as runs
-  // logging zero steps. `runAutomationsForTrigger` owns its own try/catch
-  // and never throws; the `.catch` is belt-and-braces so one trigger
-  // type's failure can't skip the rest of the loop.
+
   for (const triggerType of automationTriggers) {
-    await runAutomationsForTrigger({
+    const autoResult = await runAutomationsForTrigger({
       accountId,
       triggerType,
       contactId: contactRecord.id,
       context: {
         message_text: inboundText,
         conversation_id: conversation.id,
-        // Only set on interactive taps; drives the interactive_reply
-        // trigger's exact-id match.
         interactive_reply_id: interactiveReplyId ?? undefined,
       },
-    }).catch((err) => console.error('[automations] dispatch failed:', err))
+    }).catch((err) => {
+      console.error('[automations] dispatch failed:', err)
+      return null
+    })
+
+    if (autoResult?.sentCustomerMessage) {
+      automationRepliedToCustomer = true
+    }
   }
 
-  // AI auto-reply. Runs only for plain-text inbound the deterministic
-  // flow runner did NOT consume (flows win over the LLM), and only when
-  // the account has enabled it. Awaited inside `after()` (same reason as
-  // the webhook dispatch below); `dispatchInboundToAiReply` owns its
-  // eligibility gates + try/catch and never throws.
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
-    await dispatchInboundToAiReply({
-      accountId,
-      conversationId: conversation.id,
-      contactId: contactRecord.id,
-      configOwnerUserId,
-      // Lets the bot show "typing…" (and mark the message read) while
-      // the reply is generated.
-      inboundMessageId: message.id,
-    })
+  // AI auto-reply dispatch:
+  // - If not blocked by compliance (!isOptOut)
+  // - If the flow did not consume the event (!flowConsumed)
+  // - If an interactive event had no deterministic automation handler (!automationRepliedToCustomer)
+  // - dispatchInboundToAiReply handles human handoff, reply limits, rate limits, and slot claiming
+  if (!isOptOut && !flowConsumed) {
+    if (automationRepliedToCustomer) {
+      logDecision('AI_NO_RESPONSE', {
+        conversationId: conversation.id,
+        accountId,
+        reason: 'automation_replied',
+      })
+    } else if (inboundText.trim() || interactiveReplyId) {
+      await dispatchInboundToAiReply({
+        accountId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        configOwnerUserId,
+        inboundMessageId: message.id,
+        interactiveReplyId: interactiveReplyId ?? undefined,
+        interactiveLabel: contentText ?? undefined,
+      })
+    }
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget

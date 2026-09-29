@@ -1076,6 +1076,31 @@ async function handleReplyForActiveRun(
     };
   }
 
+  // Orchestration Rule: A flow consumes an inbound event ONLY when the
+  // event matches the node's expected input.
+  //
+  // 1. send_buttons / send_list nodes expect an interactive button/list tap.
+  //    Normal typed text is NOT their expected input. Do not consume normal text —
+  //    let it pass through so Automations and AI can evaluate and reply.
+  if (
+    message.kind === "text" &&
+    (currentNode.node_type === "send_buttons" ||
+      currentNode.node_type === "send_list")
+  ) {
+    return { consumed: false, flow_run_id: run.id, outcome: "no_match" };
+  }
+
+  // 2. An interactive reply that does not match any button on this node
+  //    has no deterministic handler here. Do not consume it — let it reach
+  //    Automations and AI handlers.
+  if (
+    message.kind === "interactive_reply" &&
+    (currentNode.node_type === "send_buttons" ||
+      currentNode.node_type === "send_list")
+  ) {
+    return { consumed: false, flow_run_id: run.id, outcome: "no_match" };
+  }
+
   // No match → fallback. Apply the policy.
   const policy = resolveFallbackPolicy(
     (await loadFlow(db, run.flow_id))?.fallback_policy,

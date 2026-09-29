@@ -495,8 +495,19 @@ describe('inbound webhook: template quick-reply buttons (#478)', () => {
       (call) => (call[0] as { triggerType: string }).triggerType,
     )
     expect(triggers).toContain('interactive_reply')
-    // The AI auto-reply must stay out of it — a button tap is not a
-    // free-text question.
+    // If unhandled by flows or automation, reaches AI with payload/label in context
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interactiveReplyId: 'YES_INTERESTED',
+        interactiveLabel: 'Yes, interested',
+      }),
+    )
+  })
+
+  it('does not dispatch interactive reply to AI when flow consumes it', async () => {
+    h.dispatchInboundToFlows.mockResolvedValueOnce({ consumed: true })
+    await runWebhook(templateButtonTap)
+
     expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
   })
 

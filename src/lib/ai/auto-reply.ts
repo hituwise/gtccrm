@@ -14,6 +14,8 @@ import {
 import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 
+import { logDecision } from './decision-logger'
+
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
   accountId: string
@@ -26,26 +28,25 @@ interface DispatchArgs {
    *  a typing indicator (which also marks it read) is shown while the
    *  reply is generated. Optional so older callers keep working. */
   inboundMessageId?: string
+  /** Optional interactive reply identifier for button/list taps */
+  interactiveReplyId?: string
+  /** Optional interactive reply title/label */
+  interactiveLabel?: string
 }
 
 /**
  * AI auto-reply for a freshly-arrived inbound message.
  *
- * Invoked from the WhatsApp webhook's `after()` block, only when no
- * deterministic flow consumed the message (flows win). Mirrors the flow
- * runner's contract: it owns its try/catch and NEVER throws — a failing
- * or slow LLM call must not affect the webhook's 200 to Meta.
+ * Invoked from the WhatsApp webhook's `after()` block, when no
+ * deterministic flow or automation consumed/replied to the message.
  *
- * Eligibility gates (any → silent no-op):
+ * Eligibility gates:
  *   - AI off / auto-reply disabled for the account
  *   - a human agent is assigned (they own the thread)
  *   - auto-reply was disabled for this conversation (prior handoff)
  *   - the per-conversation reply cap is reached
+ *   - account-level rate limit
  *   - there's nothing to reply to
- *
- * The 24h WhatsApp session window is inherently open here — we're
- * reacting to a customer message that just landed — so no separate
- * window check is needed.
  */
 export async function dispatchInboundToAiReply(
   args: DispatchArgs,
@@ -62,24 +63,14 @@ export async function dispatchInboundToAiReply(
     const db = supabaseAdmin()
 
     const config = await loadAiConfig(db, accountId)
-    if (!config || !config.autoReplyEnabled) return
-
-    // Deterministic, user-configured responders win over the LLM — the
-    // caller already excludes messages a Flow consumed. Message-level
-    // automations (`new_message_received` / `keyword_match`) are
-    // dispatched independently for this same inbound and may send their
-    // own reply, so if the account has any active one we stand down to
-    // avoid double-texting the customer. (Relationship triggers like
-    // `first_inbound_message` don't count — they're not per-message
-    // auto-responders.)
-    const { data: autoResponders } = await db
-      .from('automations')
-      .select('id')
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .in('trigger_type', ['new_message_received', 'keyword_match'])
-      .limit(1)
-    if (autoResponders && autoResponders.length > 0) return
+    if (!config || !config.autoReplyEnabled) {
+      logDecision('AI_NO_RESPONSE', {
+        conversationId,
+        accountId,
+        reason: 'auto_reply_disabled_or_unconfigured',
+      })
+      return
+    }
 
     const { data: conv, error: convErr } = await db
       .from('conversations')
@@ -87,37 +78,63 @@ export async function dispatchInboundToAiReply(
       .eq('id', conversationId)
       .maybeSingle()
     if (convErr || !conv) return
-    if (conv.assigned_agent_id) return // a human owns this thread
-    if (conv.ai_autoreply_disabled) return // handed off / turned off here
-    // Cheap early-out; the authoritative cap check is the atomic claim
-    // below (this read can race a concurrent inbound).
-    if (conv.ai_reply_count >= config.autoReplyMaxPerConversation) return
+
+    // Human handoff is authoritative: if assigned_agent_id exists OR
+    // ai_autoreply_disabled=true, do not invoke AI.
+    if (conv.assigned_agent_id || conv.ai_autoreply_disabled) {
+      logDecision('HUMAN_HANDOFF', {
+        conversationId,
+        accountId,
+        assignedAgent: Boolean(conv.assigned_agent_id),
+        reason: conv.assigned_agent_id ? 'agent_assigned' : 'autoreply_disabled',
+      })
+      return
+    }
+
+    // Per-conversation reply cap check
+    if (conv.ai_reply_count >= config.autoReplyMaxPerConversation) {
+      logDecision('AI_REPLY_LIMIT_REACHED', {
+        conversationId,
+        accountId,
+        replyCount: conv.ai_reply_count,
+        maxReplies: config.autoReplyMaxPerConversation,
+        reason: 'pre_generation_cap_reached',
+      })
+      await db
+        .from('conversations')
+        .update({
+          ai_autoreply_disabled: true,
+          ai_handoff_summary: `AI reply limit reached (${config.autoReplyMaxPerConversation} replies max).`,
+        })
+        .eq('id', conversationId)
+      return
+    }
 
     const messages = await buildConversationContext(db, conversationId)
-    if (messages.length === 0) return
+    if (messages.length === 0) {
+      logDecision('AI_NO_RESPONSE', {
+        conversationId,
+        accountId,
+        reason: 'empty_context',
+      })
+      return
+    }
 
-    // Account-wide throttle on the shared BYO key. The per-conversation
-    // cap bounds one thread; this bounds a burst across many threads (a
-    // marketing blast landing 200 replies at once) so we never run the
-    // owner's key past the provider's rate limit. Over the limit → skip
-    // the auto-reply; the inbound still sits in the inbox for a human.
+    // Account-wide throttle on the shared BYO key (30 replies/min safety limit).
     const acctLimit = checkRateLimit(
       `ai-autoreply:${accountId}`,
       RATE_LIMITS.aiAutoReplyAccount,
     )
     if (!acctLimit.success) {
-      console.warn(
-        `[ai auto-reply] account ${accountId} hit the per-account rate limit — skipping this inbound.`,
-      )
+      logDecision('AI_RATE_LIMITED', {
+        accountId,
+        conversationId,
+        limit: RATE_LIMITS.aiAutoReplyAccount.limit,
+      })
       return
     }
 
-    // Every gate has passed — we're committed to attempting a reply, so
-    // show the customer "typing…" (and mark their message read) while the
-    // retrieval + LLM round trips run. Meta clears the indicator after
-    // 25 s or when our reply lands, whichever is first, so there's
-    // nothing to undo on the handoff / no-text path. Strictly
-    // best-effort: a failed indicator must never cost us the reply.
+    // Show customer "typing…" while generating reply
     if (inboundMessageId) {
       await showTypingIndicator(db, accountId, inboundMessageId)
     }
@@ -142,11 +159,6 @@ export async function dispatchInboundToAiReply(
       messages,
     })
 
-    // Record token spend on the account's BYO key. Fire-and-forget so it
-    // never adds latency to the customer-facing send: `logAiUsage`
-    // swallows its own errors, so the floating promise can't reject.
-    // Logged regardless of handoff — the provider call happened either
-    // way.
     void logAiUsage(db, {
       accountId,
       conversationId,
@@ -157,13 +169,11 @@ export async function dispatchInboundToAiReply(
     })
 
     if (handoff || !text) {
-      // The model can't (or shouldn't) answer — stop auto-replying on
-      // this thread and hand it to a human. We (a) pause the bot here
-      // (sticky until re-enabled), (b) route the conversation to the
-      // configured handoff agent — null leaves it in the shared queue —
-      // and (c) leave a short internal note so whoever picks it up has
-      // context. Assigning fires the `on_conversation_assigned` trigger,
-      // which notifies the agent.
+      logDecision('AI_NO_RESPONSE', {
+        conversationId,
+        accountId,
+        reason: 'model_handoff',
+      })
       const summary = buildHandoffSummary({
         messages,
         replyCount: conv.ai_reply_count ?? 0,
@@ -172,8 +182,6 @@ export async function dispatchInboundToAiReply(
         ai_autoreply_disabled: true,
         ai_handoff_summary: summary,
       }
-      // Only set the assignee when a target is configured AND the thread
-      // isn't already owned — never stomp an existing human assignment.
       if (config.handoffAgentId && !conv.assigned_agent_id) {
         update.assigned_agent_id = config.handoffAgentId
       }
@@ -181,11 +189,7 @@ export async function dispatchInboundToAiReply(
       return
     }
 
-    // Atomically claim a reply slot: the cap check + increment happen in
-    // one UPDATE, so concurrent inbounds can never overshoot the cap. If
-    // another inbound just took the last slot, `claimed` is false and we
-    // skip the send. (We consume a slot slightly before the send lands —
-    // fail-safe: under-reply rather than over-reply.)
+    // Atomically claim a reply slot
     const { data: claimed, error: claimErr } = await db.rpc(
       'claim_ai_reply_slot',
       {
@@ -194,14 +198,30 @@ export async function dispatchInboundToAiReply(
       },
     )
     if (claimErr) {
-      // A real error here (vs. losing the cap race) is almost always a
-      // deploy issue — e.g. `claim_ai_reply_slot` not EXECUTE-able by the
-      // service role, or the migration not applied. Log it loudly: a
-      // silent return makes "auto-reply never fires" undiagnosable.
+      logDecision('AI_NO_RESPONSE', {
+        conversationId,
+        accountId,
+        reason: 'claim_rpc_failed',
+      })
       console.error('[ai auto-reply] claim_ai_reply_slot failed:', claimErr)
       return
     }
-    if (claimed !== true) return // lost the per-conversation cap race
+    if (claimed !== true) {
+      logDecision('AI_REPLY_LIMIT_REACHED', {
+        conversationId,
+        accountId,
+        maxReplies: config.autoReplyMaxPerConversation,
+        reason: 'claim_slot_exhausted',
+      })
+      await db
+        .from('conversations')
+        .update({
+          ai_autoreply_disabled: true,
+          ai_handoff_summary: `AI reply limit reached (${config.autoReplyMaxPerConversation} replies max).`,
+        })
+        .eq('id', conversationId)
+      return
+    }
 
     await engineSendText({
       accountId,
@@ -211,6 +231,8 @@ export async function dispatchInboundToAiReply(
       text,
       aiGenerated: true,
     })
+
+    logDecision('AI_RESPONDED', { conversationId, accountId })
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
   }
