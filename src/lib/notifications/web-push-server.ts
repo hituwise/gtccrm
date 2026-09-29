@@ -128,11 +128,27 @@ export async function sendTestPushNotification(
     .eq('user_id', userId)
     .eq('account_id', accountId);
 
-  if (error || !subscriptions || subscriptions.length === 0) {
+  if (error) {
+    console.error('[web-push] query push_subscriptions error:', error);
+    if (error.code === '42P01' || error.message?.includes('does not exist')) {
+      return {
+        success: false,
+        sentCount: 0,
+        message: 'Table "push_subscriptions" does not exist in Supabase. Please run the SQL in Supabase SQL Editor.',
+      };
+    }
     return {
       success: false,
       sentCount: 0,
-      message: 'No push subscription found on this device. Please enable notifications first.',
+      message: `Database error: ${error.message}`,
+    };
+  }
+
+  if (!subscriptions || subscriptions.length === 0) {
+    return {
+      success: false,
+      sentCount: 0,
+      message: 'No push subscription found on this device. Please toggle the notification switch OFF and ON to register.',
     };
   }
 

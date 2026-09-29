@@ -117,9 +117,17 @@ export async function subscribeToPush(): Promise<{
     });
 
     if (!saveRes.ok) {
+      const errData = await saveRes.json().catch(() => ({}));
+      const msg = errData.error || 'Failed to save subscription to server.';
+      if (msg.includes('does not exist')) {
+        return {
+          success: false,
+          error: 'Table "push_subscriptions" not found. Please run the SQL in Supabase SQL Editor.',
+        };
+      }
       return {
         success: false,
-        error: 'Failed to save subscription to server.',
+        error: msg,
       };
     }
 

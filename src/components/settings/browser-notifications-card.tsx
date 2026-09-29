@@ -86,12 +86,18 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-    void isPushSubscribed().then(setHasPush);
+    void isPushSubscribed().then(async (subscribed) => {
+      setHasPush(subscribed);
+      if (!subscribed && enabled && permission === 'granted') {
+        const sub = await subscribeToPush();
+        if (sub.success) setHasPush(true);
+      }
+    });
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
     };
-  }, [checked]);
+  }, [checked, enabled, permission]);
 
   const onToggle = async (next: boolean) => {
     if (!next) {
@@ -170,7 +176,18 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
         // Fall through to server push
       }
 
-      // 2. Real server-side Web Push (reaches mobile PWA & desktop even if closed)
+      // 2. Ensure device has an active push subscription
+      if (!hasPush) {
+        const subRes = await subscribeToPush();
+        if (subRes.success) {
+          setHasPush(true);
+        } else if (subRes.error) {
+          toast.error(subRes.error);
+          return;
+        }
+      }
+
+      // 3. Real server-side Web Push (reaches mobile PWA & desktop even if closed)
       const pushRes = await sendTestPush();
       if (pushRes.success) {
         toast.success('Push alert delivered! Check your notification tray.');
