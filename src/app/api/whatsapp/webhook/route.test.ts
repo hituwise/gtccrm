@@ -211,6 +211,19 @@ vi.mock('@supabase/supabase-js', () => ({
               }
             },
           }
+        case 'push_subscriptions':
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => Promise.resolve({ data: [], error: null }),
+                then: (cb: (val: unknown) => unknown) =>
+                  Promise.resolve({ data: [], error: null }).then(cb),
+              }),
+            }),
+            delete: () => ({
+              in: () => Promise.resolve({ error: null }),
+            }),
+          }
         default:
           throw new Error(`unexpected table: ${table}`)
       }

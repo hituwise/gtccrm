@@ -20,6 +20,7 @@ import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { isOptOutMessage } from '@/lib/whatsapp/compliance'
 import { logDecision } from '@/lib/ai/decision-logger'
+import { dispatchPushNotificationForInboundMessage } from '@/lib/notifications/web-push-server'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -996,6 +997,25 @@ async function processMessage(
     whatsapp_message_id: message.id,
     content_type: contentType,
     text: contentText,
+  })
+
+  // Background Web Push for PWA mobile/desktop (delivers even when tab is closed)
+  await dispatchPushNotificationForInboundMessage(supabaseAdmin(), {
+    accountId,
+    conversationId: conversation.id,
+    senderName:
+      contactRecord.name ||
+      contactRecord.wa_username ||
+      contactRecord.phone ||
+      'New WhatsApp Customer',
+    contentText:
+      contentText ||
+      (interactiveReplyId
+        ? `Tapped: ${contentText || interactiveReplyId}`
+        : 'New message received'),
+    assignedAgentId: conversation.assigned_agent_id,
+  }).catch((err) => {
+    console.error('[web-push] Failed to dispatch push:', err)
   })
 }
 
