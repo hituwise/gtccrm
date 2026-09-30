@@ -302,7 +302,13 @@
       "deals": "Negocios",
       "noTags": "Sin etiquetas",
       "noDeals": "Sin negocios",
-      "addNotePlaceholder": "Agregar una nota..."
+      "addNotePlaceholder": "Agregar una nota...",
+      "addTag": "Añadir etiqueta",
+      "searchTags": "Buscar etiquetas...",
+      "createTag": "Crear etiqueta \"{name}\"",
+      "noMatchingTags": "No se encontraron etiquetas",
+      "noTagsAvailable": "No hay etiquetas disponibles",
+      "removeTag": "Eliminar etiqueta"
     },
     "aiBanner": {
       "pausedTitle": "El asistente de IA está en pausa aquí",

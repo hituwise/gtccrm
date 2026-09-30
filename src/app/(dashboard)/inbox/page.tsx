@@ -8,12 +8,11 @@ import {
   CONVERSATION_SELECT,
   normalizeConversation,
 } from "@/lib/inbox/conversations";
-import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
+import type { Conversation, Message, Contact, ConversationStatus, Tag } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
-import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -554,6 +553,28 @@ function InboxPageInner() {
     [activeConversation]
   );
 
+  const handleContactTagsChange = useCallback(
+    (newTags: Tag[]) => {
+      if (!activeContact) return;
+      setActiveContact((prev) => (prev ? { ...prev, tags: newTags } : prev));
+      if (activeConversation?.contact?.id === activeContact.id) {
+        setActiveConversation((prev) =>
+          prev && prev.contact
+            ? { ...prev, contact: { ...prev.contact, tags: newTags } }
+            : prev
+        );
+      }
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.contact?.id === activeContact.id
+            ? { ...c, contact: c.contact ? { ...c.contact, tags: newTags } : undefined }
+            : c
+        )
+      );
+    },
+    [activeContact, activeConversation]
+  );
+
   // On mobile (<lg) we show a SINGLE pane — either the list or the
   // thread — rather than cramming both side-by-side. Selecting a
   // conversation slides the thread in; the thread's back button pops
@@ -632,7 +653,10 @@ function InboxPageInner() {
             toggle — which is itself desktop-only — never affects it. */}
         {contactPanelOpen && (
           <div className="hidden lg:block">
-            <ContactSidebar contact={activeContact} />
+            <ContactSidebar
+              contact={activeContact}
+              onTagsChange={handleContactTagsChange}
+            />
           </div>
         )}
       </div>

@@ -302,7 +302,13 @@
       "deals": "딜",
       "noTags": "태그 없음",
       "noDeals": "딜 없음",
-      "addNotePlaceholder": "메모 추가..."
+      "addNotePlaceholder": "메모 추가...",
+      "addTag": "태그 추가",
+      "searchTags": "태그 검색...",
+      "createTag": "\"{name}\" 태그 생성",
+      "noMatchingTags": "일치하는 태그 없음",
+      "noTagsAvailable": "사용 가능한 태그 없음",
+      "removeTag": "태그 삭제"
     },
     "aiBanner": {
       "pausedTitle": "이 대화에서 AI 어시스턴트가 일시 중지됨",
