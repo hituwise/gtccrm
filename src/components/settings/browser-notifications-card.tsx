@@ -430,10 +430,10 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
                   </p>
                   <ul className="text-xs text-muted-foreground list-disc list-inside space-y-0.5 pt-1">
                     <li>
-                      <strong>Android (Chrome):</strong> Tap the 3 dots (⋮) &rarr; <span className="text-foreground">"Install app"</span> (or "Add to Home screen").
+                      <strong>Android (Chrome):</strong> Tap the 3 dots (⋮) &rarr; <span className="text-foreground">&quot;Install app&quot;</span> (or &quot;Add to Home screen&quot;).
                     </li>
                     <li>
-                      <strong>iPhone (Safari):</strong> Tap the Share button (&uarr;) &rarr; <span className="text-foreground">"Add to Home Screen"</span>.
+                      <strong>iPhone (Safari):</strong> Tap the Share button (&uarr;) &rarr; <span className="text-foreground">&quot;Add to Home Screen&quot;</span>.
                     </li>
                   </ul>
                   {installPrompt && !isStandalone && (

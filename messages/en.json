@@ -153,6 +153,8 @@
       "unknown": "Unknown"
     },
     "messageThread": {
+      "callLead": "Call lead",
+      "leadDetails": "Lead details",
       "backToConversations": "Back to conversations",
       "hideContactPanel": "Hide contact panel",
       "showContactPanel": "Show contact panel",

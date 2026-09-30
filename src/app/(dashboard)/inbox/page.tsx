@@ -13,6 +13,13 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -68,6 +75,7 @@ function InboxPageInner() {
    * below reconciles to the stored value right after mount instead.
    */
   const [contactPanelOpen, setContactPanelOpen] = useState(true);
+  const [mobileContactSheetOpen, setMobileContactSheetOpen] = useState(false);
   useEffect(() => {
     try {
       const stored = localStorage.getItem(CONTACT_PANEL_STORAGE_KEY);
@@ -455,6 +463,7 @@ function InboxPageInner() {
       setActiveConversation(conv);
       setActiveContact(conv.contact ?? null);
       setMessages([]);
+      setMobileContactSheetOpen(false);
       // Optimistically clear the unread badge for this conv. The
       // server-side reset is fired by the unread-reset effect inside
       // MessageThread (which reads activeConversation.unread_count, not
@@ -494,6 +503,7 @@ function InboxPageInner() {
     setActiveConversation(null);
     setActiveContact(null);
     setMessages([]);
+    setMobileContactSheetOpen(false);
     // Clearing the ref lets the deep-link auto-selector fire again if
     // the user later visits /inbox?c=<same-id> — desirable UX.
     autoSelectedForDeepLinkRef.current = null;
@@ -644,6 +654,7 @@ function InboxPageInner() {
             onRefresh={handleManualRefresh}
             contactPanelOpen={contactPanelOpen}
             onToggleContactPanel={handleToggleContactPanel}
+            onOpenMobileContactSheet={() => setMobileContactSheetOpen(true)}
           />
         </div>
 
@@ -659,6 +670,28 @@ function InboxPageInner() {
             />
           </div>
         )}
+
+        {/* Mobile Contact Sidebar Sheet — slides out on mobile when tapping info, tags, or notes */}
+        <div className="lg:hidden">
+          <Sheet
+            open={mobileContactSheetOpen && hasActiveConv}
+            onOpenChange={setMobileContactSheetOpen}
+          >
+            <SheetContent
+              side="right"
+              className="p-0 w-[85vw] max-w-sm sm:max-w-md border-l border-border bg-card"
+            >
+              <SheetHeader className="sr-only">
+                <SheetTitle>Contact Details</SheetTitle>
+                <SheetDescription>Tags, notes, and deals</SheetDescription>
+              </SheetHeader>
+              <ContactSidebar
+                contact={activeContact}
+                onTagsChange={handleContactTagsChange}
+              />
+            </SheetContent>
+          </Sheet>
+        </div>
       </div>
     </div>
   );

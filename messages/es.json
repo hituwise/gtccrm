@@ -153,6 +153,8 @@
       "unknown": "Desconocido"
     },
     "messageThread": {
+      "callLead": "Llamar contacto",
+      "leadDetails": "Detalles del contacto",
       "backToConversations": "Volver a las conversaciones",
       "hideContactPanel": "Ocultar panel del contacto",
       "showContactPanel": "Mostrar panel del contacto",

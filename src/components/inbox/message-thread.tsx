@@ -25,8 +25,10 @@ import {
   Clock,
   ArrowLeft,
   RefreshCw,
-  PanelRightOpen,
-  PanelRightClose,
+  Phone,
+  Tag as TagIcon,
+  StickyNote,
+  User,
 } from "lucide-react";
 import { format, isToday, isYesterday, differenceInHours } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -38,7 +40,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { MessageBubble } from "./message-bubble";
 import { MessageActions } from "./message-actions";
 import { MediaLightbox } from "./media-lightbox";
@@ -106,6 +107,7 @@ interface MessageThreadProps {
    */
   contactPanelOpen?: boolean;
   onToggleContactPanel?: () => void;
+  onOpenMobileContactSheet?: () => void;
 }
 
 function formatDateSeparator(dateStr: string, t: ReturnType<typeof useTranslations>): string {
@@ -164,10 +166,12 @@ export function MessageThread({
   onRefresh,
   contactPanelOpen,
   onToggleContactPanel,
+  onOpenMobileContactSheet,
 }: MessageThreadProps) {
   const t = useTranslations("Inbox.messageThread");
   const tTimer = useTranslations("Inbox.sessionTimer");
   const tQuote = useTranslations("Inbox.replyQuote");
+  const tSidebar = useTranslations("Inbox.sidebar");
 
   const { user } = useAuth();
   const { getPresence, getRow, now } = usePresence();
@@ -882,6 +886,12 @@ export function MessageThread({
   }
 
   const displayName = contact.name || contactHandle(contact);
+  const rawPhone =
+    contact.phone ||
+    (contactHandle(contact).replace(/[^0-9+]/g, "").length >= 7
+      ? contactHandle(contact)
+      : null);
+  const cleanPhone = rawPhone ? rawPhone.replace(/[^0-9+]/g, "") : null;
   const messageGroups = groupMessagesByDate(messages);
   const currentStatus = STATUS_OPTIONS.find(
     (s) => s.value === conversation.status
@@ -905,13 +915,23 @@ export function MessageThread({
       {/* Header — solid card surface sits on top of the doodle so the
           name/avatar/dropdowns stay legible. */}
       <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-3 py-3 sm:px-4">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+        <div
+          onClick={() => {
+            if (onOpenMobileContactSheet) onOpenMobileContactSheet();
+            else if (onToggleContactPanel) onToggleContactPanel();
+          }}
+          className="flex min-w-0 items-center gap-2 sm:gap-3 cursor-pointer"
+          title={t("leadDetails")}
+        >
           {/* Back-to-list button — mobile only. Hidden on lg+ where the
               conversation list is always visible next to the thread. */}
           {onBack && (
             <button
               type="button"
-              onClick={onBack}
+              onClick={(e) => {
+                e.stopPropagation();
+                onBack();
+              }}
               aria-label={t("backToConversations")}
               className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground lg:hidden"
             >
@@ -941,31 +961,38 @@ export function MessageThread({
           </Badge>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Contact-panel toggle — desktop only. The contact sidebar
-              eats a chunk of horizontal width that crowds the thread on
-              smaller laptops; this lets agents reclaim it when they just
-              want to read and reply. Hidden on mobile, where the sidebar
-              never renders as a permanent panel anyway. Issue #258. */}
-          {onToggleContactPanel && (
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Direct Call Button — call lead directly with 1 tap */}
+          {cleanPhone && (
+            <a
+              href={`tel:${cleanPhone}`}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 transition-colors shrink-0"
+              title={t("callLead")}
+              aria-label={t("callLead")}
+            >
+              <Phone className="h-4 w-4" />
+            </a>
+          )}
+
+          {/* Contact Details / Lead Info Button */}
+          {(onOpenMobileContactSheet || onToggleContactPanel) && (
             <button
               type="button"
-              onClick={onToggleContactPanel}
-              aria-label={
-                contactPanelOpen ? t("hideContactPanel") : t("showContactPanel")
-              }
+              onClick={() => {
+                if (window.innerWidth < 1024 && onOpenMobileContactSheet) {
+                  onOpenMobileContactSheet();
+                } else if (onToggleContactPanel) {
+                  onToggleContactPanel();
+                }
+              }}
+              aria-label={contactPanelOpen ? t("hideContactPanel") : t("showContactPanel")}
               title={contactPanelOpen ? t("hideContact") : t("showContact")}
-              aria-pressed={contactPanelOpen}
               className={cn(
-                "hidden h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground lg:inline-flex",
+                "inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground shrink-0",
                 contactPanelOpen ? "text-primary" : "text-muted-foreground",
               )}
             >
-              {contactPanelOpen ? (
-                <PanelRightClose className="h-4 w-4" />
-              ) : (
-                <PanelRightOpen className="h-4 w-4" />
-              )}
+              <User className="h-4 w-4" />
             </button>
           )}
 
@@ -982,7 +1009,7 @@ export function MessageThread({
               aria-label={t("refreshConversation")}
               title={t("refresh")}
               className={cn(
-                "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60",
+                "inline-flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60",
               )}
             >
               <RefreshCw
@@ -1080,6 +1107,54 @@ export function MessageThread({
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+        </div>
+      </div>
+
+      {/* Mobile Quick Lead Bar — shows tags & notes immediately when opening chat on mobile */}
+      <div className="flex lg:hidden items-center justify-between border-b border-border bg-card/80 px-3 py-1.5 gap-2 text-xs backdrop-blur-sm">
+        <button
+          type="button"
+          onClick={() => {
+            if (onOpenMobileContactSheet) onOpenMobileContactSheet();
+            else if (onToggleContactPanel) onToggleContactPanel();
+          }}
+          className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 text-left scrollbar-none"
+        >
+          <TagIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          {contact.tags && contact.tags.length > 0 ? (
+            <div className="flex items-center gap-1 overflow-hidden">
+              {contact.tags.map((tag) => (
+                <span
+                  key={tag.id}
+                  className="rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0"
+                  style={{
+                    backgroundColor: `${tag.color}20`,
+                    color: tag.color,
+                  }}
+                >
+                  {tag.name}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-[11px] text-muted-foreground">
+              + {tSidebar("addTag")}
+            </span>
+          )}
+        </button>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              if (onOpenMobileContactSheet) onOpenMobileContactSheet();
+              else if (onToggleContactPanel) onToggleContactPanel();
+            }}
+            className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-[11px] font-medium text-foreground hover:bg-muted/80 transition-colors"
+          >
+            <StickyNote className="h-3 w-3 text-muted-foreground" />
+            <span>{tSidebar("notes")}</span>
+          </button>
         </div>
       </div>
 

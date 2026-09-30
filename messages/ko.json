@@ -153,6 +153,8 @@
       "unknown": "알 수 없음"
     },
     "messageThread": {
+      "callLead": "리드에게 전화",
+      "leadDetails": "리드 정보",
       "backToConversations": "대화 목록으로 돌아가기",
       "hideContactPanel": "연락처 패널 숨기기",
       "showContactPanel": "연락처 패널 표시",
