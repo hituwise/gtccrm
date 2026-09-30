@@ -7,13 +7,15 @@ interface DbMessage {
   content_text: string | null
   content_type?: string | null
   interactive_reply_id?: string | null
+  template_name?: string | null
 }
 
 /**
- * Fetch the last N text and interactive messages of a conversation and map them to the
+ * Fetch the last N text, interactive, and template messages of a conversation and map them to the
  * provider-neutral chat shape. Customer messages become `user`; agent
  * and bot messages become `assistant`. Interactive replies include the button/option
- * label and payload so AI has full context of lead interactions.
+ * label and payload so AI has full context of lead interactions. Template messages include
+ * the template name and rendered text so AI understands broadcast offers.
  *
  * Ordered oldest-first (chronological) so the transcript reads
  * naturally and the most recent customer message lands last.
@@ -25,9 +27,9 @@ export async function buildConversationContext(
 ): Promise<ChatMessage[]> {
   const { data, error } = await db
     .from('messages')
-    .select('sender_type, content_text, content_type, interactive_reply_id')
+    .select('sender_type, content_text, content_type, interactive_reply_id, template_name')
     .eq('conversation_id', conversationId)
-    .in('content_type', ['text', 'interactive'])
+    .in('content_type', ['text', 'interactive', 'template'])
     .order('created_at', { ascending: false })
     .limit(limit)
 
@@ -44,6 +46,8 @@ export async function buildConversationContext(
         m.interactive_reply_id !== content
       ) {
         content = `${content} (${m.interactive_reply_id})`
+      } else if (m.content_type === 'template' && m.template_name) {
+        content = `[Template: ${m.template_name}]\n${content}`
       }
       return {
         role: m.sender_type === 'customer' ? 'user' : 'assistant',

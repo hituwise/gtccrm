@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { cn } from "@/lib/utils";
 import type { Contact, Deal, ContactNote, Tag } from "@/types";
 import {
   Phone,
@@ -16,6 +17,7 @@ import {
   X,
   Search,
   Loader2,
+  Radio,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -46,6 +48,21 @@ interface ContactSidebarProps {
   onTagsChange?: (tags: Tag[]) => void;
 }
 
+interface ContactBroadcast {
+  id: string;
+  status: string;
+  sent_at: string | null;
+  delivered_at: string | null;
+  read_at: string | null;
+  replied_at: string | null;
+  created_at: string;
+  broadcasts?: {
+    id: string;
+    name: string;
+    template_name: string;
+  } | null;
+}
+
 export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
   const tSidebar = useTranslations("Inbox.sidebar");
   const tThread = useTranslations("Inbox.messageThread");
@@ -54,6 +71,7 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
   const [copied, setCopied] = useState(false);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [notes, setNotes] = useState<ContactNote[]>([]);
+  const [broadcasts, setBroadcasts] = useState<ContactBroadcast[]>([]);
   const [tags, setTags] = useState<(Tag & { contact_tag_id: string })[]>([]);
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [loadingAccountTags, setLoadingAccountTags] = useState(false);
@@ -69,8 +87,8 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
 
     const supabase = createClient();
 
-    // Fetch deals, notes, and tags in parallel
-    const [dealsRes, notesRes, tagsRes] = await Promise.all([
+    // Fetch deals, notes, tags, and broadcast campaigns in parallel
+    const [dealsRes, notesRes, tagsRes, broadcastsRes] = await Promise.all([
       supabase
         .from("deals")
         .select("*, stage:pipeline_stages(*)")
@@ -85,10 +103,28 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
         .from("contact_tags")
         .select("id, tag_id, tags(*)")
         .eq("contact_id", contact.id),
+      supabase
+        .from("broadcast_recipients")
+        .select(`
+          id,
+          status,
+          sent_at,
+          delivered_at,
+          read_at,
+          replied_at,
+          created_at,
+          broadcasts!inner(id, name, template_name)
+        `)
+        .eq("contact_id", contact.id)
+        .order("created_at", { ascending: false })
+        .limit(10),
     ]);
 
     if (dealsRes.data) setDeals(dealsRes.data);
     if (notesRes.data) setNotes(notesRes.data);
+    if (broadcastsRes.data) {
+      setBroadcasts(broadcastsRes.data as unknown as ContactBroadcast[]);
+    }
     if (tagsRes.data) {
       const mapped = tagsRes.data
         .filter((ct: Record<string, unknown>) => ct.tags)
@@ -593,6 +629,56 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="my-4 border-t border-border" />
+
+          {/* Broadcast Campaigns */}
+          <div>
+            <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              <Radio className="h-3 w-3 text-primary" />
+              <span>Broadcast Campaigns</span>
+            </div>
+            <div className="mt-2 space-y-2">
+              {broadcasts.length === 0 ? (
+                <p className="px-1 text-xs text-muted-foreground">No broadcast campaigns sent</p>
+              ) : (
+                broadcasts.map((b) => (
+                  <div key={b.id} className="rounded-lg bg-muted px-3 py-2">
+                    <div className="flex items-start justify-between gap-1">
+                      <p className="text-sm font-medium text-foreground truncate">
+                        {b.broadcasts?.name || "Broadcast"}
+                      </p>
+                      <span
+                        className={cn(
+                          "rounded-full px-1.5 py-0.5 text-[10px] font-medium shrink-0",
+                          b.status === "replied"
+                            ? "bg-purple-500/20 text-purple-400"
+                            : b.status === "read"
+                              ? "bg-blue-500/20 text-blue-400"
+                              : b.status === "delivered"
+                                ? "bg-emerald-500/20 text-emerald-400"
+                                : b.status === "failed"
+                                  ? "bg-red-500/20 text-red-400"
+                                  : "bg-muted-foreground/20 text-muted-foreground"
+                        )}
+                      >
+                        {b.status.charAt(0).toUpperCase() + b.status.slice(1)}
+                      </span>
+                    </div>
+                    {b.broadcasts?.template_name && (
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        Template: <span className="font-mono text-foreground/80">{b.broadcasts.template_name}</span>
+                      </p>
+                    )}
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      {format(new Date(b.sent_at || b.created_at), "MMM d, yyyy HH:mm")}
+                    </p>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

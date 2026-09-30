@@ -66,4 +66,30 @@ describe('buildConversationContext', () => {
     )
     expect(out).toEqual([{ role: 'user', content: 'Yes, Interested (btn_yes)' }])
   })
+
+  it('includes template messages with template name in context', async () => {
+    // DB returns newest-first (customer reply is newer than template send)
+    const out = await buildConversationContext(
+      fakeDb([
+        {
+          sender_type: 'customer',
+          content_text: 'I am interested',
+        },
+        {
+          sender_type: 'agent',
+          content_text: 'Join our junior training batch this Monday!',
+          content_type: 'template',
+          template_name: 'jr_training',
+        },
+      ]),
+      'conv-1',
+    )
+    expect(out).toEqual([
+      {
+        role: 'assistant',
+        content: '[Template: jr_training]\nJoin our junior training batch this Monday!',
+      },
+      { role: 'user', content: 'I am interested' },
+    ])
+  })
 })

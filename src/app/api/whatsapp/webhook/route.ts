@@ -1,7 +1,7 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
-import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
+import { getMediaUrl } from '@/lib/whatsapp/meta-api'
 import { mirrorInboundMedia } from '@/lib/whatsapp/mirror-inbound-media'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import {
@@ -25,6 +25,7 @@ import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
+import { syncBroadcastMessagesToConversation } from '@/lib/whatsapp/broadcast-inbox-sync'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -536,17 +537,30 @@ async function handleStatusUpdate(status: {
 /**
  * If an inbound message's sender is on a still-unreplied
  * broadcast_recipients row, flip it to `replied` so the reply count
- * advances on the parent broadcast.
+ * advances on the parent broadcast, and backfill the outbound broadcast
+ * template into the conversation's `messages` table so both the agent
+ * inbox and AI auto-reply see the broadcast context.
  *
  * Runs on a best-effort basis — failures here must not break the
  * main inbound-message flow, so errors are swallowed with a log.
  */
-async function flagBroadcastReplyIfAny(accountId: string, contactId: string) {
+async function flagBroadcastReplyIfAny(
+  accountId: string,
+  contactId: string,
+  conversationId?: string
+) {
   try {
-    // Most recent outbound broadcast in this account that hasn't
-    // been replied to yet. Account-scoped so a shared inbox reply
-    // marks the broadcast as replied regardless of which teammate
-    // sent it.
+    if (conversationId) {
+      await syncBroadcastMessagesToConversation(supabaseAdmin(), {
+        accountId,
+        contactId,
+        conversationId,
+        markReplied: true,
+      })
+      return
+    }
+
+    // Fallback when conversationId is not provided
     const { data: recs, error } = await supabaseAdmin()
       .from('broadcast_recipients')
       .select('id, status, broadcast_id, broadcasts!inner(account_id)')
@@ -720,6 +734,16 @@ async function processMessage(
     return
   }
 
+  // If this contact was a recent broadcast recipient, flag the reply
+  // so the broadcast's `replied_count` advances and backfill the outbound
+  // broadcast template message into `messages` so swipe-reply quote resolution,
+  // the inbox UI, and AI auto-reply have the full broadcast template context.
+  await flagBroadcastReplyIfAny(
+    accountId,
+    contactRecord.id,
+    conversation.id
+  )
+
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(
@@ -858,7 +882,7 @@ async function processMessage(
   // If this contact was a recent broadcast recipient, flag the reply
   // so the broadcast's `replied_count` advances (via the aggregate
   // trigger installed in migration 003).
-  await flagBroadcastReplyIfAny(accountId, contactRecord.id)
+  await flagBroadcastReplyIfAny(accountId, contactRecord.id, conversation.id)
 
   // ============================================================
   // Inbound Message Orchestration

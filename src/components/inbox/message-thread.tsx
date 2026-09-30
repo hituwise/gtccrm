@@ -304,6 +304,28 @@ export function MessageThread({
     (async () => {
       setLoading(true);
 
+      // Background sync to ensure any broadcast messages sent to this contact
+      // are mirrored into the conversation thread (e.g. for existing replied leads)
+      fetch(`/api/conversations/${conversationId}/sync-broadcast`, {
+        method: "POST",
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((result) => {
+          if (result?.synced > 0 && !cancelled) {
+            supabase
+              .from("messages")
+              .select("*")
+              .eq("conversation_id", conversationId)
+              .order("created_at", { ascending: true })
+              .then(({ data: updated }) => {
+                if (!cancelled && updated) {
+                  onMessagesLoadedRef.current(updated);
+                }
+              });
+          }
+        })
+        .catch(() => {});
+
       const { data, error } = await supabase
         .from("messages")
         .select("*")
