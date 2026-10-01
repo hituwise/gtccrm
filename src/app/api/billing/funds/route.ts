@@ -5,6 +5,7 @@ import {
   getBillingTransactions,
   addAccountFunds,
   getMetaBillingDetails,
+  updateMetaCurrentBalance,
 } from '@/lib/billing/wallet';
 
 export async function GET() {
@@ -18,7 +19,7 @@ export async function GET() {
       metaBilling,
       wallet,
       transactions,
-      lowBalance: wallet.balance < wallet.low_balance_threshold,
+      lowBalance: metaBilling.currentBalance < wallet.low_balance_threshold,
     });
   } catch (err) {
     return toErrorResponse(err);
@@ -27,9 +28,28 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    // Only agents/admins/owners can add funds
+    // Only agents/admins/owners can manage funds
     const ctx = await requireRole('agent');
     const body = await req.json().catch(() => ({}));
+
+    // If updating current Meta balance
+    if (body.current_balance !== undefined) {
+      const bal = Number(body.current_balance);
+      if (isNaN(bal) || bal < 0) {
+        return NextResponse.json(
+          { error: 'Please enter a valid balance' },
+          { status: 400 }
+        );
+      }
+      await updateMetaCurrentBalance(ctx.supabase, ctx.accountId, bal);
+      const metaBilling = await getMetaBillingDetails(ctx.supabase, ctx.accountId);
+      return NextResponse.json({
+        success: true,
+        currentBalance: bal,
+        metaBilling,
+      });
+    }
+
     const amount = Number(body.amount);
 
     if (isNaN(amount) || amount <= 0) {

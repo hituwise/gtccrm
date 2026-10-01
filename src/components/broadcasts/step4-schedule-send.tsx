@@ -145,6 +145,9 @@ export function Step4ScheduleSend({
     estimatedReach
   );
 
+  const currentBalance = metaBilling?.currentBalance ?? 82.43;
+  const deficit = Math.max(0, Math.round((totalCost - currentBalance) * 100) / 100);
+
   // Quick schedule presets
   const setQuickSchedule = (hoursAhead: number) => {
     const d = new Date();
@@ -209,7 +212,7 @@ export function Step4ScheduleSend({
           </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 rounded-lg border border-border bg-card/60 p-3 text-xs">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 rounded-lg border border-border bg-card/60 p-3 text-xs">
           <div>
             <p className="text-muted-foreground">Target Recipients</p>
             <p className="text-sm font-bold text-foreground">
@@ -225,35 +228,66 @@ export function Step4ScheduleSend({
           </div>
 
           <div>
-            <p className="text-muted-foreground">Total Required Meta Funds</p>
+            <p className="text-muted-foreground">Required Meta Funds</p>
             <p className="text-sm font-bold text-primary font-mono">
               ₹{totalCost.toFixed(2)}
             </p>
           </div>
+
+          <div>
+            <p className="text-muted-foreground">Current Meta Balance</p>
+            <p className={`text-sm font-bold font-mono ${currentBalance < totalCost ? 'text-amber-500' : 'text-emerald-500'}`}>
+              {loadingWallet ? '...' : `₹${currentBalance.toFixed(2)}`}
+            </p>
+          </div>
         </div>
 
-        {/* Notice: Billed directly by Meta + Add Funds in Meta button */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="size-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
-            <div>
-              <p className="font-semibold text-foreground">
-                Meta Account Charges: ~₹{totalCost.toFixed(2)} required
-              </p>
-              <p className="text-muted-foreground mt-0.5">
-                Charges are billed directly to your Meta Business Account ({metaBilling?.wabaName || 'Geniplus Academy'}). If your funds are low or prepaid balance is depleted, please go to your Meta Business Account to add funds before sending.
-              </p>
+        {/* Notice: Billed directly by Meta with dynamic balance check */}
+        {currentBalance < totalCost ? (
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="size-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+              <div>
+                <p className="font-semibold text-foreground">
+                  Low Meta Balance: ₹{currentBalance.toFixed(2)} available vs ~₹{totalCost.toFixed(2)} required
+                </p>
+                <p className="text-muted-foreground mt-0.5">
+                  This campaign requires ~₹{totalCost.toFixed(2)}, which exceeds your current Meta balance of ₹{currentBalance.toFixed(2)}. Please add at least <strong>₹{deficit.toFixed(2)}</strong> in your Meta Business Account before sending to prevent delivery errors.
+                </p>
+              </div>
             </div>
+            <a
+              href={metaBillingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-medium px-3 py-1.5 text-xs shrink-0 whitespace-nowrap shadow-sm transition-colors"
+            >
+              Add Funds in Meta <ArrowUpRight className="size-3.5" />
+            </a>
           </div>
-          <a
-            href={metaBillingUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-medium px-3 py-1.5 text-xs shrink-0 whitespace-nowrap shadow-sm transition-colors"
-          >
-            Add Funds in Meta <ArrowUpRight className="size-3.5" />
-          </a>
-        </div>
+        ) : (
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-900 dark:text-emerald-200">
+            <div className="flex items-start gap-2">
+              <CheckCircle2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+              <div>
+                <p className="font-semibold text-foreground">
+                  Sufficient Meta Balance: ₹{currentBalance.toFixed(2)} available
+                </p>
+                <p className="text-muted-foreground mt-0.5">
+                  Your current Meta balance covers the estimated ~₹{totalCost.toFixed(2)} Meta charge. Projected balance after sending: ~₹{(currentBalance - totalCost).toFixed(2)}.
+                </p>
+              </div>
+            </div>
+            <a
+              href={metaBillingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md border border-emerald-600/30 bg-emerald-600/10 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600/20 font-medium px-3 py-1.5 text-xs shrink-0 whitespace-nowrap transition-colors"
+            >
+              Meta Billing Hub <ArrowUpRight className="size-3.5" />
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Dispatch Timing: Send Now vs Schedule for Event */}

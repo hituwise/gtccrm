@@ -425,6 +425,7 @@ export interface MetaBillingDetails {
   qualityRating?: string;
   billingHubUrl: string;
   whatsappManagerUrl: string;
+  currentBalance: number;
   totalCost30d: number;
   totalVolume30d: number;
   recentDataPoints: {
