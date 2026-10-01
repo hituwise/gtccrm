@@ -414,6 +414,34 @@ export interface Deal {
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
 export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed';
 
+export interface MetaBillingDetails {
+  connected: boolean;
+  wabaId?: string;
+  wabaName?: string;
+  currency: string;
+  accountReviewStatus?: string;
+  status?: string;
+  businessVerificationStatus?: string;
+  qualityRating?: string;
+  billingHubUrl: string;
+  whatsappManagerUrl: string;
+  totalCost30d: number;
+  totalVolume30d: number;
+  recentDataPoints: {
+    start: number;
+    end: number;
+    cost: number;
+    volume: number;
+  }[];
+  rates: {
+    marketing: number;
+    utility: number;
+    authentication: number;
+    service: number;
+    currency: string;
+  };
+}
+
 export interface AccountWallet {
   account_id: string;
   balance: number;
@@ -440,6 +468,7 @@ export interface BillingTransaction {
   broadcast_id?: string | null;
   created_at: string;
 }
+
 
 export interface Broadcast {
   id: string;

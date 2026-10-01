@@ -3,58 +3,52 @@
 import { useEffect, useState } from "react";
 import {
   Wallet,
-  Plus,
   AlertTriangle,
   CheckCircle2,
-  Clock,
   ArrowUpRight,
-  ArrowDownLeft,
   Loader2,
   Receipt,
   HelpCircle,
+  ExternalLink,
+  ShieldCheck,
+  TrendingUp,
+  RefreshCw,
 } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { AccountWallet, BillingTransaction } from "@/types";
+import type { MetaBillingDetails } from "@/types";
 
 interface BillingWalletCardProps {
   onFundsUpdated?: () => void;
 }
 
-export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps) {
-  const [wallet, setWallet] = useState<AccountWallet | null>(null);
-  const [transactions, setTransactions] = useState<BillingTransaction[]>([]);
+export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {}) {
+  const [metaBilling, setMetaBilling] = useState<MetaBillingDetails | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [showRatesModal, setShowRatesModal] = useState(false);
+  const [showUsageModal, setShowUsageModal] = useState(false);
 
-  // Add Funds form state
-  const [amount, setAmount] = useState<string>("1000");
-  const [description, setDescription] = useState<string>("Messaging Funds Recharge");
-  const [reference, setReference] = useState<string>("");
-  const [submitting, setSubmitting] = useState(false);
-
-  async function loadBilling() {
+  async function loadBilling(isManual = false) {
+    if (isManual) setRefreshing(true);
     try {
       const res = await fetch("/api/billing/funds");
       if (!res.ok) throw new Error("Failed to load billing");
       const data = await res.json();
-      setWallet(data.wallet);
-      setTransactions(data.transactions || []);
+      if (data.metaBilling) {
+        setMetaBilling(data.metaBilling);
+      }
     } catch (err) {
       console.warn("[BillingWalletCard] load error:", err);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }
 
@@ -62,400 +56,295 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps) {
     loadBilling();
   }, []);
 
-  async function handleAddFunds() {
-    const num = parseFloat(amount);
-    if (isNaN(num) || num <= 0) {
-      toast.error("Please enter a valid amount.");
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const res = await fetch("/api/billing/funds", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: num,
-          description: description.trim() || "Messaging Funds Top-up",
-          reference: reference.trim() || null,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to add funds");
-      }
-
-      toast.success(`Successfully added ₹${num.toLocaleString()} to messaging funds!`, {
-        description: `New Available Balance: ₹${Number(data.newBalance).toLocaleString()}`,
-      });
-
-      setShowAddModal(false);
-      setReference("");
-      await loadBilling();
-      onFundsUpdated?.();
-    } catch (err: unknown) {
-      toast.error((err as { message?: string })?.message || "Could not add funds");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  if (loading && !wallet) {
-    return (
-      <div className="mb-6 flex h-24 items-center justify-center rounded-xl border border-border bg-card/60 p-4">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  const balance = Number(wallet?.balance ?? 0);
-  const threshold = Number(wallet?.low_balance_threshold ?? 100);
-  const isLow = balance < threshold;
-  const marketingRate = Number(wallet?.marketing_rate ?? 0.88);
-  const utilityRate = Number(wallet?.utility_rate ?? 0.15);
-
-  const approxMarketingMsgs = Math.floor(balance / marketingRate);
-  const approxUtilityMsgs = Math.floor(balance / utilityRate);
+  const metaBillingUrl =
+    metaBilling?.whatsappManagerUrl || "https://business.facebook.com/billing_hub";
 
   return (
-    <>
-      <div className="mb-6 overflow-hidden rounded-xl border border-border bg-card shadow-xs transition-all">
-        {/* Low Balance Warning Banner */}
-        {isLow && (
-          <div className="flex items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-800 dark:text-amber-300">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-              <span>
-                <strong>Low Messaging Balance Warning:</strong> Your available balance is ₹
-                {balance.toFixed(2)}. Top up funds now to ensure scheduled &amp; upcoming campaigns send smoothly.
-              </span>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setShowAddModal(true)}
-              className="h-7 border-amber-500/40 bg-background text-xs font-medium hover:bg-amber-500/10"
-            >
-              <Plus className="mr-1 size-3" /> Top Up
-            </Button>
+    <div className="rounded-2xl border border-border/80 bg-gradient-to-br from-card via-card/90 to-background p-5 shadow-sm space-y-4">
+      {/* Top Bar: Title & Meta Status */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <Wallet className="h-5 w-5" />
           </div>
-        )}
-
-        <div className="p-4 sm:p-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            {/* Balance & Status */}
-            <div className="flex items-start gap-4">
-              <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                <Wallet className="size-6" />
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    Available Messaging Balance
-                  </p>
-                  {isLow ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                      <AlertTriangle className="size-3" /> Low Balance
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-                      <CheckCircle2 className="size-3" /> Sufficient Funds
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
-                    ₹{balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    ({wallet?.currency ?? "INR"})
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Can send approx{" "}
-                  <strong className="text-foreground">~{approxMarketingMsgs.toLocaleString()}</strong> marketing or{" "}
-                  <strong className="text-foreground">~{approxUtilityMsgs.toLocaleString()}</strong> utility messages.
-                </p>
-              </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-foreground text-base">
+                Meta WhatsApp Billing &amp; Usage
+              </h3>
+              {metaBilling?.connected && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                  <ShieldCheck className="h-3 w-3" /> Meta Connected
+                </span>
+              )}
             </div>
+            <p className="text-xs text-muted-foreground">
+              {metaBilling?.wabaName ? (
+                <>
+                  Account: <strong className="text-foreground">{metaBilling.wabaName}</strong> (WABA ID: {metaBilling.wabaId})
+                </>
+              ) : (
+                "Direct connection to your Meta WhatsApp Business Account"
+              )}
+            </p>
+          </div>
+        </div>
 
-            {/* Actions */}
-            <div className="flex flex-wrap items-center gap-2 sm:self-center">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowRatesModal(true)}
-                className="gap-1.5 text-xs text-muted-foreground"
-              >
-                <HelpCircle className="size-3.5" />
-                Pricing Rates
-              </Button>
+        {/* Action Controls */}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => loadBilling(true)}
+            disabled={refreshing}
+            className="h-8 text-xs text-muted-foreground hover:text-foreground"
+            title="Refresh Meta Billing"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+          </Button>
 
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowHistoryModal(true)}
-                className="gap-1.5 text-xs text-muted-foreground"
-              >
-                <Receipt className="size-3.5" />
-                History ({transactions.length})
-              </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowRatesModal(true)}
+            className="h-8 text-xs border-border text-muted-foreground hover:text-foreground gap-1.5"
+          >
+            <HelpCircle className="h-3.5 w-3.5" />
+            Rate Card
+          </Button>
 
-              <Button
-                size="sm"
-                onClick={() => setShowAddModal(true)}
-                className="gap-1.5 bg-primary text-xs text-primary-foreground shadow-sm hover:bg-primary/90"
-              >
-                <Plus className="size-3.5" />
-                Add Funds
-              </Button>
-            </div>
+          {/* Primary CTA: Go to Meta Account to Add Funds */}
+          <a
+            href={metaBillingUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-3.5 py-1.5 text-xs shadow-sm transition-colors"
+          >
+            <span>Go to Meta Account &amp; Add Funds</span>
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </a>
+        </div>
+      </div>
+
+      {/* Notice Banner: Low Fund / Meta Account Guidance */}
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-900 dark:text-amber-200">
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+          <div className="space-y-1">
+            <p className="font-semibold text-foreground">
+              Official Meta Billing Notice
+            </p>
+            <p className="text-muted-foreground leading-relaxed">
+              WhatsApp messaging charges are billed directly by <strong>Meta</strong> through your Meta Business Account. If your balance is low, prepaid credit is exhausted, or broadcasts fail with payment errors, please <strong>go to your Meta Business Account to add funds</strong> or update your payment card.
+            </p>
           </div>
         </div>
       </div>
 
-      {/* Add Funds Dialog */}
-      <Dialog open={showAddModal} onOpenChange={setShowAddModal}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Wallet className="size-5 text-primary" />
-              Add WhatsApp Messaging Funds
-            </DialogTitle>
-            <DialogDescription>
-              Record funds added to your WhatsApp messaging wallet to run broadcasts and scheduled campaigns.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-foreground">
-                Select Amount (INR)
-              </label>
-              <div className="grid grid-cols-4 gap-2 mb-2">
-                {[500, 1000, 2500, 5000].map((preset) => (
-                  <Button
-                    key={preset}
-                    type="button"
-                    variant={amount === preset.toString() ? "default" : "outline"}
-                    size="sm"
-                    className="text-xs"
-                    onClick={() => setAmount(preset.toString())}
-                  >
-                    ₹{preset}
-                  </Button>
-                ))}
-              </div>
-              <div className="relative">
-                <span className="absolute left-3 top-2.5 text-sm font-semibold text-muted-foreground">
-                  ₹
-                </span>
-                <Input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  placeholder="Enter custom amount"
-                  className="pl-7"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-foreground">
-                Payment Reference / Transaction ID (Optional)
-              </label>
-              <Input
-                value={reference}
-                onChange={(e) => setReference(e.target.value)}
-                placeholder="e.g. UPI-982103491, Bank Transfer Ref"
-              />
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-foreground">
-                Note / Description
-              </label>
-              <Input
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="e.g. Monthly WhatsApp broadcast recharge"
-              />
-            </div>
+      {/* Live Meta Account Stats Cards */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {/* 30-Day Meta Spend */}
+        <div className="rounded-xl border border-border bg-card/60 p-3 space-y-1">
+          <div className="flex items-center justify-between text-muted-foreground text-xs">
+            <span>Meta Spend (30d)</span>
+            <TrendingUp className="h-3.5 w-3.5 text-primary" />
           </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowAddModal(false)}
-              disabled={submitting}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleAddFunds}
-              disabled={submitting || !amount || parseFloat(amount) <= 0}
-              className="gap-1.5"
-            >
-              {submitting && <Loader2 className="size-3.5 animate-spin" />}
-              Confirm &amp; Add Funds
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Transaction History Dialog */}
-      <Dialog open={showHistoryModal} onOpenChange={setShowHistoryModal}>
-        <DialogContent className="sm:max-w-xl max-h-[85vh] flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Receipt className="size-5 text-primary" />
-              Messaging Fund History
-            </DialogTitle>
-            <DialogDescription>
-              Track funds added and broadcast campaign expenditures.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex-1 overflow-y-auto space-y-2 py-2 pr-1">
-            {transactions.length === 0 ? (
-              <p className="py-8 text-center text-xs text-muted-foreground">
-                No billing transactions recorded yet.
-              </p>
+          <div className="text-xl font-bold text-foreground">
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             ) : (
-              transactions.map((tx) => {
-                const isCredit = tx.type === "credit";
-                return (
-                  <div
-                    key={tx.id}
-                    className="flex items-center justify-between rounded-lg border border-border bg-card/60 p-3 text-xs"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`flex size-8 shrink-0 items-center justify-center rounded-full ${
-                          isCredit
-                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                            : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                        }`}
-                      >
-                        {isCredit ? (
-                          <ArrowDownLeft className="size-4" />
-                        ) : (
-                          <ArrowUpRight className="size-4" />
-                        )}
-                      </div>
-                      <div className="space-y-0.5">
-                        <p className="font-medium text-foreground">{tx.description}</p>
-                        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                          <span>{new Date(tx.created_at).toLocaleDateString()}</span>
-                          {tx.reference && (
-                            <>
-                              <span>•</span>
-                              <span>Ref: {tx.reference}</span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <p
-                        className={`font-semibold ${
-                          isCredit
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : "text-foreground"
-                        }`}
-                      >
-                        {isCredit ? "+" : "-"}₹
-                        {Number(tx.amount).toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground">
-                        Bal: ₹{Number(tx.balance_after).toFixed(2)}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })
+              `₹${(metaBilling?.totalCost30d ?? 0).toFixed(2)}`
             )}
           </div>
+          <p className="text-[11px] text-muted-foreground">Actual Meta API charges</p>
+        </div>
 
-          <DialogFooter>
-            <Button size="sm" onClick={() => setShowHistoryModal(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        {/* 30-Day Message Volume */}
+        <div className="rounded-xl border border-border bg-card/60 p-3 space-y-1">
+          <div className="flex items-center justify-between text-muted-foreground text-xs">
+            <span>Volume (30d)</span>
+            <Receipt className="h-3.5 w-3.5 text-primary" />
+          </div>
+          <div className="text-xl font-bold text-foreground">
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            ) : (
+              (metaBilling?.totalVolume30d ?? 0).toLocaleString()
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground">Paid conversation sessions</p>
+        </div>
 
-      {/* Pricing Rates Dialog */}
+        {/* Quality Rating */}
+        <div className="rounded-xl border border-border bg-card/60 p-3 space-y-1">
+          <div className="flex items-center justify-between text-muted-foreground text-xs">
+            <span>Quality Rating</span>
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          </div>
+          <div className="text-xl font-bold text-emerald-600 dark:text-emerald-400 capitalize">
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            ) : (
+              metaBilling?.qualityRating?.toLowerCase() || "Green"
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground">Account health status</p>
+        </div>
+
+        {/* Account Currency & Review Status */}
+        <div className="rounded-xl border border-border bg-card/60 p-3 space-y-1">
+          <div className="flex items-center justify-between text-muted-foreground text-xs">
+            <span>Currency &amp; Review</span>
+            <ShieldCheck className="h-3.5 w-3.5 text-primary" />
+          </div>
+          <div className="text-xl font-bold text-foreground">
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            ) : (
+              `${metaBilling?.currency || "INR"} · ${metaBilling?.accountReviewStatus || "APPROVED"}`
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground">Meta Business Account</p>
+        </div>
+      </div>
+
+      {/* Footer Info: Meta Links & Daily Spend Explorer */}
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-muted-foreground">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setShowUsageModal(true)}
+            className="text-primary hover:underline font-medium inline-flex items-center gap-1"
+          >
+            <TrendingUp className="h-3 w-3" /> View Daily Meta Spend Breakdown
+          </button>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <a
+            href="https://business.facebook.com/billing_hub"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-foreground inline-flex items-center gap-1 transition-colors"
+          >
+            Meta Billing Hub <ExternalLink className="h-3 w-3" />
+          </a>
+          <a
+            href={metaBillingUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-foreground inline-flex items-center gap-1 transition-colors"
+          >
+            WhatsApp Manager <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
+      </div>
+
+      {/* Modal: Official Meta Rate Card */}
       <Dialog open={showRatesModal} onOpenChange={setShowRatesModal}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <HelpCircle className="size-5 text-primary" />
-              Meta WhatsApp Messaging Rates (India)
+              <Receipt className="h-5 w-5 text-primary" />
+              Meta WhatsApp Conversation Rates
             </DialogTitle>
             <DialogDescription>
-              WhatsApp Business API conversation charges based on template category:
+              Standard Meta conversation pricing per message for India (INR). Charged per 24-hour conversation window or template send.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3 py-2 text-xs">
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div>
-                <p className="font-semibold text-foreground">Marketing Templates</p>
-                <p className="text-muted-foreground">Promotions, offers, event invitations, webinars</p>
+          <div className="space-y-3 py-2 text-sm">
+            <div className="divide-y divide-border rounded-xl border border-border overflow-hidden">
+              <div className="flex items-center justify-between p-3 bg-muted/30">
+                <div>
+                  <p className="font-semibold text-foreground">Marketing Template</p>
+                  <p className="text-xs text-muted-foreground">Offers, product launches, newsletters</p>
+                </div>
+                <span className="font-mono font-bold text-foreground">₹0.88 / msg</span>
               </div>
-              <span className="font-mono text-sm font-bold text-foreground">
-                ₹{marketingRate.toFixed(2)} / msg
-              </span>
+
+              <div className="flex items-center justify-between p-3">
+                <div>
+                  <p className="font-semibold text-foreground">Utility Template</p>
+                  <p className="text-xs text-muted-foreground">Order updates, reminders, account alerts</p>
+                </div>
+                <span className="font-mono font-bold text-foreground">₹0.15 / msg</span>
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-muted/30">
+                <div>
+                  <p className="font-semibold text-foreground">Authentication (OTP)</p>
+                  <p className="text-xs text-muted-foreground">One-time passwords, verification codes</p>
+                </div>
+                <span className="font-mono font-bold text-foreground">₹0.15 / msg</span>
+              </div>
+
+              <div className="flex items-center justify-between p-3">
+                <div>
+                  <p className="font-semibold text-foreground">Service Conversations</p>
+                  <p className="text-xs text-muted-foreground">Customer-initiated inbound support</p>
+                </div>
+                <span className="font-mono font-bold text-foreground">₹0.30 / 24h</span>
+              </div>
             </div>
 
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div>
-                <p className="font-semibold text-foreground">Utility Templates</p>
-                <p className="text-muted-foreground">Confirmations, reminders, event updates</p>
-              </div>
-              <span className="font-mono text-sm font-bold text-foreground">
-                ₹{utilityRate.toFixed(2)} / msg
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div>
-                <p className="font-semibold text-foreground">Authentication &amp; OTP</p>
-                <p className="text-muted-foreground">Verification codes and password resets</p>
-              </div>
-              <span className="font-mono text-sm font-bold text-foreground">
-                ₹0.15 / msg
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div>
-                <p className="font-semibold text-foreground">Service Conversations</p>
-                <p className="text-muted-foreground">Customer initiated chat inquiries</p>
-              </div>
-              <span className="font-mono text-sm font-bold text-foreground">
-                ₹0.30 / 24h window
-              </span>
+            <div className="rounded-lg border border-border/80 bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
+              <p className="font-medium text-foreground">💡 How Meta Billing Works</p>
+              <p>
+                Meta deducts charges from your Meta Business Account prepaid balance or charges your linked credit card. If you broadcast a marketing template to 1,000 users, Meta will charge approximately <strong>₹880.00</strong>.
+              </p>
             </div>
           </div>
-
-          <DialogFooter>
-            <Button size="sm" onClick={() => setShowRatesModal(false)}>
-              Close
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+
+      {/* Modal: Daily Meta Spend Breakdown */}
+      <Dialog open={showUsageModal} onOpenChange={setShowUsageModal}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <TrendingUp className="h-5 w-5 text-primary" />
+              Meta Graph API Spend History (Last 30 Days)
+            </DialogTitle>
+            <DialogDescription>
+              Live messaging volume and cost data points reported directly by Meta Pricing Analytics for {metaBilling?.wabaName || "your account"}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2 max-h-80 overflow-y-auto">
+            {metaBilling?.recentDataPoints && metaBilling.recentDataPoints.length > 0 ? (
+              <div className="divide-y divide-border rounded-xl border border-border overflow-hidden text-xs">
+                <div className="grid grid-cols-3 bg-muted/50 p-2.5 font-medium text-muted-foreground">
+                  <span>Date</span>
+                  <span className="text-center">Volume</span>
+                  <span className="text-right">Meta Cost</span>
+                </div>
+                {metaBilling.recentDataPoints.map((dp, idx) => (
+                  <div key={idx} className="grid grid-cols-3 p-2.5 items-center">
+                    <span className="text-foreground">
+                      {new Date(dp.start * 1000).toLocaleDateString([], {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </span>
+                    <span className="text-center text-muted-foreground font-mono">
+                      {dp.volume.toLocaleString()} msgs
+                    </span>
+                    <span className="text-right font-semibold text-foreground font-mono">
+                      ₹{dp.cost.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-6 text-xs text-muted-foreground">
+                No recent paid usage recorded by Meta for this billing window.
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

@@ -4,15 +4,18 @@ import {
   getAccountWallet,
   getBillingTransactions,
   addAccountFunds,
+  getMetaBillingDetails,
 } from '@/lib/billing/wallet';
 
 export async function GET() {
   try {
     const ctx = await getCurrentAccount();
+    const metaBilling = await getMetaBillingDetails(ctx.supabase, ctx.accountId);
     const wallet = await getAccountWallet(ctx.supabase, ctx.accountId);
     const transactions = await getBillingTransactions(ctx.supabase, ctx.accountId, 30);
 
     return NextResponse.json({
+      metaBilling,
       wallet,
       transactions,
       lowBalance: wallet.balance < wallet.low_balance_threshold,

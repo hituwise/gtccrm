@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { MessageTemplate, AccountWallet } from '@/types';
+import { MessageTemplate, AccountWallet, MetaBillingDetails } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -25,7 +25,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Coins,
-  Plus,
+  ArrowUpRight,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { calculateBroadcastCost, DEFAULT_RATES } from '@/lib/billing/wallet';
@@ -65,12 +65,10 @@ export function Step4ScheduleSend({
   const [estimatedReach, setEstimatedReach] = useState<number>(0);
   const [loadingReach, setLoadingReach] = useState(true);
 
-  // Billing & Wallet state
+  // Meta Billing state
+  const [metaBilling, setMetaBilling] = useState<MetaBillingDetails | null>(null);
   const [wallet, setWallet] = useState<AccountWallet | null>(null);
   const [loadingWallet, setLoadingWallet] = useState(true);
-  const [showAddFunds, setShowAddFunds] = useState(false);
-  const [fundAmount, setFundAmount] = useState('1000');
-  const [addingFunds, setAddingFunds] = useState(false);
 
   // Scheduling state: 'now' vs 'schedule'
   const [sendMode, setSendMode] = useState<'now' | 'schedule'>('now');
@@ -94,6 +92,9 @@ export function Step4ScheduleSend({
       if (res.ok) {
         const data = await res.json();
         setWallet(data.wallet);
+        if (data.metaBilling) {
+          setMetaBilling(data.metaBilling);
+        }
       }
     } catch (err) {
       console.warn('[Step4ScheduleSend] wallet load error:', err);
@@ -141,14 +142,8 @@ export function Step4ScheduleSend({
   // Cost calculation
   const { costPerMessage, totalCost, categoryLabel } = calculateBroadcastCost(
     template.category,
-    estimatedReach,
-    wallet ?? undefined
+    estimatedReach
   );
-
-  const currentBalance = Number(wallet?.balance ?? 0);
-  const isSufficientFunds = currentBalance >= totalCost;
-  const balanceAfter = Math.max(0, currentBalance - totalCost);
-  const requiredDeficit = Math.max(0, Math.round((totalCost - currentBalance) * 100) / 100);
 
   // Quick schedule presets
   const setQuickSchedule = (hoursAhead: number) => {
@@ -160,36 +155,6 @@ export function Step4ScheduleSend({
       `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
     );
   };
-
-  async function handleQuickAddFunds() {
-    const num = parseFloat(fundAmount);
-    if (isNaN(num) || num <= 0) {
-      toast.error('Please enter a valid amount.');
-      return;
-    }
-    setAddingFunds(true);
-    try {
-      const res = await fetch('/api/billing/funds', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          amount: num,
-          description: `Funds Top-up for Broadcast: ${name.trim() || 'New Campaign'}`,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to add funds');
-      }
-      toast.success(`Added ₹${num.toLocaleString()}! New balance: ₹${Number(data.newBalance).toFixed(2)}`);
-      setShowAddFunds(false);
-      await loadWallet();
-    } catch (err: unknown) {
-      toast.error((err as { message?: string })?.message || 'Failed to add funds');
-    } finally {
-      setAddingFunds(false);
-    }
-  }
 
   const audienceLabel =
     audience.type === 'all'
@@ -207,12 +172,15 @@ export function Step4ScheduleSend({
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }, []);
 
+  const metaBillingUrl =
+    metaBilling?.whatsappManagerUrl || 'https://business.facebook.com/billing_hub';
+
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold text-foreground">{t('scheduleSend.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Review estimated cost, choose dispatch timing, or schedule for an upcoming event.
+          Review estimated Meta messaging funds, choose dispatch timing, or schedule for an upcoming event.
         </p>
       </div>
 
@@ -229,87 +197,63 @@ export function Step4ScheduleSend({
         />
       </div>
 
-      {/* Cost & Required Funds Calculator Card */}
+      {/* Cost & Required Meta Funds Calculator Card */}
       <div className="rounded-xl border border-primary/20 bg-gradient-to-br from-primary/5 via-background to-card p-4 space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <Coins className="size-4 text-primary" />
-            Estimated Funds &amp; Cost Calculation
+            Estimated Meta Funds Required
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              Rate: <strong className="text-foreground">₹{costPerMessage.toFixed(2)}</strong> / recipient ({categoryLabel})
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowAddFunds(true)}
-              className="h-7 text-xs text-primary hover:text-primary hover:bg-primary/10 gap-1"
-            >
-              <Plus className="size-3" /> Top Up
-            </Button>
-          </div>
+          <span className="text-xs text-muted-foreground">
+            Meta Rate: <strong className="text-foreground">₹{costPerMessage.toFixed(2)}</strong> / recipient ({categoryLabel})
+          </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 rounded-lg border border-border bg-card/60 p-3 text-xs">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 rounded-lg border border-border bg-card/60 p-3 text-xs">
           <div>
-            <p className="text-muted-foreground">Recipients</p>
+            <p className="text-muted-foreground">Target Recipients</p>
             <p className="text-sm font-bold text-foreground">
               {loadingReach ? '...' : estimatedReach.toLocaleString()}
             </p>
           </div>
 
           <div>
-            <p className="text-muted-foreground">Required Funds</p>
-            <p className="text-sm font-bold text-primary">
-              ₹{totalCost.toFixed(2)}
-            </p>
-          </div>
-
-          <div>
-            <p className="text-muted-foreground">Available Balance</p>
+            <p className="text-muted-foreground">Template Category</p>
             <p className="text-sm font-bold text-foreground">
-              {loadingWallet ? '...' : `₹${currentBalance.toFixed(2)}`}
+              {categoryLabel}
             </p>
           </div>
 
           <div>
-            <p className="text-muted-foreground">Balance After Send</p>
-            <p className={`text-sm font-bold ${isSufficientFunds ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
-              ₹{balanceAfter.toFixed(2)}
+            <p className="text-muted-foreground">Total Required Meta Funds</p>
+            <p className="text-sm font-bold text-primary font-mono">
+              ₹{totalCost.toFixed(2)}
             </p>
           </div>
         </div>
 
-        {/* Fund Status Badge / Alert */}
-        {isSufficientFunds ? (
-          <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-300">
-            <CheckCircle2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            <span>
-              <strong>Sufficient Balance:</strong> You have enough funds to send this campaign to all {estimatedReach} recipients.
-            </span>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-              <span>
-                <strong>Insufficient Balance:</strong> This broadcast requires <strong>₹{totalCost.toFixed(2)}</strong>, but your wallet has <strong>₹{currentBalance.toFixed(2)}</strong>. You need <strong>₹{requiredDeficit.toFixed(2)}</strong> more.
-              </span>
+        {/* Notice: Billed directly by Meta + Add Funds in Meta button */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="size-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+            <div>
+              <p className="font-semibold text-foreground">
+                Meta Account Charges: ~₹{totalCost.toFixed(2)} required
+              </p>
+              <p className="text-muted-foreground mt-0.5">
+                Charges are billed directly to your Meta Business Account ({metaBilling?.wabaName || 'Geniplus Academy'}). If your funds are low or prepaid balance is depleted, please go to your Meta Business Account to add funds before sending.
+              </p>
             </div>
-            <Button
-              size="sm"
-              onClick={() => {
-                setFundAmount(Math.ceil(requiredDeficit).toString());
-                setShowAddFunds(true);
-              }}
-              className="h-7 text-xs bg-amber-600 hover:bg-amber-700 text-white shrink-0"
-            >
-              Add ₹{Math.ceil(requiredDeficit)} Now
-            </Button>
           </div>
-        )}
+          <a
+            href={metaBillingUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-medium px-3 py-1.5 text-xs shrink-0 whitespace-nowrap shadow-sm transition-colors"
+          >
+            Add Funds in Meta <ArrowUpRight className="size-3.5" />
+          </a>
+        </div>
       </div>
 
       {/* Dispatch Timing: Send Now vs Schedule for Event */}
@@ -551,10 +495,10 @@ export function Step4ScheduleSend({
                   </p>
                   <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-foreground space-y-1">
                     <p>
-                      • <strong>Estimated Total Cost:</strong> ₹{totalCost.toFixed(2)}
+                      • <strong>Estimated Meta Charges:</strong> ₹{totalCost.toFixed(2)} ({categoryLabel})
                     </p>
                     <p>
-                      • <strong>Wallet Balance:</strong> ₹{currentBalance.toFixed(2)}
+                      • <strong>Billed to:</strong> Meta WhatsApp Business Account ({metaBilling?.wabaName || 'Geniplus Academy'})
                     </p>
                     {sendMode === 'schedule' ? (
                       <p>
@@ -602,77 +546,6 @@ export function Step4ScheduleSend({
           </Dialog>
         </div>
       </div>
-
-      {/* Quick Add Funds Modal */}
-      <Dialog open={showAddFunds} onOpenChange={setShowAddFunds}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Wallet className="size-5 text-primary" />
-              Add WhatsApp Messaging Funds
-            </DialogTitle>
-            <DialogDescription>
-              Top up your messaging balance to send broadcasts and scheduled campaigns.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-foreground">
-                Amount (INR)
-              </label>
-              <div className="grid grid-cols-4 gap-2 mb-2">
-                {[500, 1000, 2500, 5000].map((preset) => (
-                  <Button
-                    key={preset}
-                    type="button"
-                    variant={fundAmount === preset.toString() ? 'default' : 'outline'}
-                    size="sm"
-                    className="text-xs"
-                    onClick={() => setFundAmount(preset.toString())}
-                  >
-                    ₹{preset}
-                  </Button>
-                ))}
-              </div>
-              <div className="relative">
-                <span className="absolute left-3 top-2.5 text-sm font-semibold text-muted-foreground">
-                  ₹
-                </span>
-                <Input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={fundAmount}
-                  onChange={(e) => setFundAmount(e.target.value)}
-                  placeholder="Enter custom amount"
-                  className="pl-7"
-                />
-              </div>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowAddFunds(false)}
-              disabled={addingFunds}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleQuickAddFunds}
-              disabled={addingFunds || !fundAmount || parseFloat(fundAmount) <= 0}
-              className="gap-1.5"
-            >
-              {addingFunds && <Loader2 className="size-3.5 animate-spin" />}
-              Add ₹{parseFloat(fundAmount) || 0}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

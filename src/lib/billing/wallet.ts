@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { AccountWallet, BillingTransaction } from '@/types';
+import type { AccountWallet, BillingTransaction, MetaBillingDetails } from '@/types';
+import { decrypt } from '@/lib/whatsapp/encryption';
 
 export const DEFAULT_RATES = {
   currency: 'INR',
@@ -22,6 +23,138 @@ interface FallbackWalletState {
   low_balance_threshold: number;
   transactions: BillingTransaction[];
 }
+
+/**
+ * Fetch real Meta WhatsApp account billing, WABA metadata,
+ * quality rating, and 30-day live spend analytics directly from Meta Graph API.
+ */
+export async function getMetaBillingDetails(
+  db: SupabaseClient,
+  accountId: string
+): Promise<MetaBillingDetails> {
+  const defaultRes: MetaBillingDetails = {
+    connected: false,
+    currency: 'INR',
+    billingHubUrl: 'https://business.facebook.com/billing_hub',
+    whatsappManagerUrl: 'https://business.facebook.com/wa/manage/home/',
+    totalCost30d: 0,
+    totalVolume30d: 0,
+    recentDataPoints: [],
+    rates: {
+      marketing: DEFAULT_RATES.marketing_rate,
+      utility: DEFAULT_RATES.utility_rate,
+      authentication: DEFAULT_RATES.auth_rate,
+      service: DEFAULT_RATES.service_rate,
+      currency: 'INR',
+    },
+  };
+
+  try {
+    const { data: config, error } = await db
+      .from('whatsapp_config')
+      .select('waba_id, phone_number_id, access_token')
+      .eq('account_id', accountId)
+      .maybeSingle();
+
+    if (error || !config || !config.waba_id || !config.access_token) {
+      return defaultRes;
+    }
+
+    let token = '';
+    try {
+      token = decrypt(config.access_token);
+    } catch {
+      return defaultRes;
+    }
+
+    const wabaId = config.waba_id;
+    const phoneNumberId = config.phone_number_id;
+
+    // 1. Fetch WABA metadata
+    const wabaRes = await fetch(
+      `https://graph.facebook.com/v21.0/${wabaId}?fields=id,name,currency,timezone_id,status,account_review_status,business_verification_status`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    ).catch(() => null);
+
+    const wabaJson = wabaRes && wabaRes.ok ? await wabaRes.json().catch(() => ({})) : {};
+
+    // 2. Fetch Phone quality rating if available
+    let qualityRating = 'GREEN';
+    if (phoneNumberId) {
+      const phoneRes = await fetch(
+        `https://graph.facebook.com/v21.0/${phoneNumberId}?fields=quality_rating,verified_name`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      ).catch(() => null);
+      if (phoneRes && phoneRes.ok) {
+        const phoneJson = await phoneRes.json().catch(() => ({}));
+        if (phoneJson.quality_rating) qualityRating = phoneJson.quality_rating;
+      }
+    }
+
+    // 3. Fetch 30-day Pricing Analytics directly from Meta Graph API
+    const start = Math.floor(Date.now() / 1000) - 30 * 24 * 3600;
+    const end = Math.floor(Date.now() / 1000);
+    const analyticsRes = await fetch(
+      `https://graph.facebook.com/v21.0/${wabaId}?fields=pricing_analytics.start(${start}).end(${end}).granularity(DAILY).metric_types(["COST","VOLUME"])`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    ).catch(() => null);
+
+    let totalCost30d = 0;
+    let totalVolume30d = 0;
+    let dataPoints: { start: number; end: number; cost: number; volume: number }[] = [];
+
+    if (analyticsRes && analyticsRes.ok) {
+      const analyticsJson = await analyticsRes.json().catch(() => ({}));
+      const rawPoints = analyticsJson.pricing_analytics?.data?.[0]?.data_points || [];
+      dataPoints = rawPoints.map((dp: any) => ({
+        start: Number(dp.start || 0),
+        end: Number(dp.end || 0),
+        cost: Math.round(Number(dp.cost || 0) * 100) / 100,
+        volume: Number(dp.volume || 0),
+      }));
+
+      for (const dp of dataPoints) {
+        totalCost30d += dp.cost;
+        totalVolume30d += dp.volume;
+      }
+    }
+
+    const currency = wabaJson.currency || 'INR';
+
+    return {
+      connected: true,
+      wabaId,
+      wabaName: wabaJson.name || 'WhatsApp Business Account',
+      currency,
+      accountReviewStatus: wabaJson.account_review_status || 'APPROVED',
+      status: wabaJson.status || 'ACTIVE',
+      businessVerificationStatus: wabaJson.business_verification_status || 'verified',
+      qualityRating,
+      billingHubUrl: 'https://business.facebook.com/billing_hub',
+      whatsappManagerUrl: `https://business.facebook.com/wa/manage/home/?waba_id=${wabaId}`,
+      totalCost30d: Math.round(totalCost30d * 100) / 100,
+      totalVolume30d,
+      recentDataPoints: dataPoints.slice(0, 7),
+      rates: {
+        marketing: DEFAULT_RATES.marketing_rate,
+        utility: DEFAULT_RATES.utility_rate,
+        authentication: DEFAULT_RATES.auth_rate,
+        service: DEFAULT_RATES.service_rate,
+        currency,
+      },
+    };
+  } catch (err) {
+    console.error('[getMetaBillingDetails] error:', err);
+    return defaultRes;
+  }
+}
+
 
 /**
  * Calculate the estimated cost for sending a template broadcast.
