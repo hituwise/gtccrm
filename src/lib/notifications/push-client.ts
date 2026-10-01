@@ -106,12 +106,39 @@ export async function subscribeToPush(): Promise<{
     }
 
     const subJson = subscription.toJSON();
+    let p256dh = subJson.keys?.p256dh;
+    let auth = subJson.keys?.auth;
+
+    if ((!p256dh || !auth) && subscription.getKey) {
+      try {
+        const rawP256dh = subscription.getKey('p256dh');
+        if (rawP256dh && !p256dh) {
+          p256dh = btoa(String.fromCharCode(...new Uint8Array(rawP256dh)))
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+        }
+        const rawAuth = subscription.getKey('auth');
+        if (rawAuth && !auth) {
+          auth = btoa(String.fromCharCode(...new Uint8Array(rawAuth)))
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+        }
+      } catch (keyErr) {
+        console.warn('[push-client] getKey fallback failed:', keyErr);
+      }
+    }
+
     const saveRes = await fetch('/api/notifications/push-subscription', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         endpoint: subscription.endpoint,
-        keys: subJson.keys,
+        keys: {
+          p256dh: p256dh || subJson.keys?.p256dh,
+          auth: auth || subJson.keys?.auth,
+        },
         userAgent: navigator.userAgent,
       }),
     });
@@ -139,6 +166,26 @@ export async function subscribeToPush(): Promise<{
       error: (err as { message?: string })?.message || 'An unknown error occurred.',
     };
   }
+}
+
+export function isMobileDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent
+  );
+}
+
+export function isIosDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as unknown as { MSStream?: unknown }).MSStream;
+}
+
+export function isStandaloneApp(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    Boolean((navigator as unknown as { standalone?: boolean }).standalone)
+  );
 }
 
 export async function unsubscribeFromPush(): Promise<boolean> {

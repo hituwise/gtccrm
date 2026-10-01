@@ -52,6 +52,7 @@ self.addEventListener('push', (event) => {
       tag: payload.tag || 'wacrm-message',
       data: payload.data || { url: '/inbox' },
       renotify: true,
+      silent: false,
       vibrate: [200, 100, 200],
     };
 

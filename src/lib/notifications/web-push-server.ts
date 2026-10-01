@@ -180,8 +180,8 @@ async function sendToSubscriptions(
   const payload = JSON.stringify({
     title: payloadData.title,
     body: payloadData.body,
-    icon: '/icon',
-    badge: '/icon',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
     tag: `conv-${payloadData.conversationId}`,
     data: {
       url: payloadData.conversationId !== 'test' ? `/inbox?c=${payloadData.conversationId}` : '/inbox',

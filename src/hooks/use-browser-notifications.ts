@@ -20,6 +20,34 @@ import {
 
 const serverSnapshot = () => false;
 
+function playNotificationChime(): void {
+  try {
+    const AudioCtx =
+      typeof window !== "undefined" &&
+      (window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    const now = ctx.currentTime;
+    osc.frequency.setValueAtTime(659.25, now);
+    osc.frequency.setValueAtTime(880.0, now + 0.08);
+    gain.gain.setValueAtTime(0.25, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.35);
+  } catch {
+    // Audio autoplay restrictions or unsupported
+  }
+}
+
 /**
  * The device-scoped "browser notifications" opt-in, kept in sync with
  * localStorage across this tab (settings toggle) and other tabs.
@@ -99,23 +127,45 @@ export function useBrowserNotifications(): void {
         labelsRef.current,
       );
 
-      try {
-        const notification = new Notification(title, {
-          body,
-          // One alert per conversation: a second message from the same
-          // customer replaces the first instead of stacking.
-          tag: msg.conversation_id,
-          icon: "/icon",
-        });
-        notification.onclick = () => {
-          window.focus();
-          router.push(conversationHref(msg.conversation_id));
-          notification.close();
-        };
-      } catch (err) {
-        // Some browsers throw from the constructor (e.g. Android Chrome
-        // requires a service worker). Non-fatal.
-        console.error("[useBrowserNotifications] failed to show:", err);
+      // Play audio chime for foreground alert
+      playNotificationChime();
+
+      // On mobile browsers (Android Chrome, iOS PWA), new Notification() throws
+      // "Illegal constructor. Use ServiceWorkerRegistration.showNotification() instead."
+      let shownViaSw = false;
+      if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          if (reg && "showNotification" in reg) {
+            await reg.showNotification(title, {
+              body,
+              tag: msg.conversation_id,
+              icon: "/icon-192.png",
+              badge: "/icon-192.png",
+              data: { url: conversationHref(msg.conversation_id) },
+            });
+            shownViaSw = true;
+          }
+        } catch (swErr) {
+          console.warn("[useBrowserNotifications] ServiceWorker showNotification failed, trying fallback:", swErr);
+        }
+      }
+
+      if (!shownViaSw) {
+        try {
+          const notification = new Notification(title, {
+            body,
+            tag: msg.conversation_id,
+            icon: "/icon-192.png",
+          });
+          notification.onclick = () => {
+            window.focus();
+            router.push(conversationHref(msg.conversation_id));
+            notification.close();
+          };
+        } catch (err) {
+          console.error("[useBrowserNotifications] failed to show:", err);
+        }
       }
     };
 

@@ -246,15 +246,35 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
   const sendTest = async () => {
     setTesting(true);
     try {
-      // 1. Try immediate local Notification
-      try {
-        new Notification(t('testTitle'), {
-          body: t('testBody'),
-          icon: '/icon-192.png',
-          tag: 'wacrm-test-notification',
-        });
-      } catch {
-        // Ignored if browser requires Service Worker
+      // 1. Try immediate local Notification (SW for mobile, new Notification for desktop)
+      let shownLocal = false;
+      if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          if (reg && 'showNotification' in reg) {
+            await reg.showNotification(t('testTitle'), {
+              body: t('testBody'),
+              icon: '/icon-192.png',
+              badge: '/icon-192.png',
+              tag: 'wacrm-test-notification',
+            });
+            shownLocal = true;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!shownLocal) {
+        try {
+          new Notification(t('testTitle'), {
+            body: t('testBody'),
+            icon: '/icon-192.png',
+            tag: 'wacrm-test-notification',
+          });
+        } catch {
+          // Ignored if browser requires Service Worker
+        }
       }
 
       // 2. Ensure device has an active push subscription

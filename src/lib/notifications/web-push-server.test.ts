@@ -95,7 +95,7 @@ describe('web-push-server', () => {
     expect(firstCallPayload).toMatchObject({
       title: 'Jane Lead',
       body: 'I want to buy your product',
-      icon: '/icon',
+      icon: '/icon-192.png',
       tag: 'conv-conv-1',
       data: { url: '/inbox?c=conv-1' },
     });
