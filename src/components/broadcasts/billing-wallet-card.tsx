@@ -118,7 +118,9 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
               )}
             </div>
             <p className="text-xs text-muted-foreground">
-              {metaBilling?.wabaName ? (
+              {loading ? (
+                "Connecting to Meta WhatsApp Business Account..."
+              ) : metaBilling?.wabaName ? (
                 <>
                   Account: <strong className="text-foreground">{metaBilling.wabaName}</strong> (Payment Account: 2101170583827889)
                 </>
@@ -135,7 +137,7 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
             variant="ghost"
             size="sm"
             onClick={() => loadBilling(true)}
-            disabled={refreshing}
+            disabled={refreshing || loading}
             className="h-8 text-xs text-muted-foreground hover:text-foreground"
             title="Refresh Meta Billing"
           >
@@ -166,15 +168,31 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
       </div>
 
       {/* Notice Banner: Low Fund / Meta Account Guidance */}
-      <div className={`rounded-xl border p-3.5 text-xs ${isLowBalance ? "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"}`}>
+      <div className={`rounded-xl border p-3.5 text-xs ${loading ? "border-border bg-muted/30 text-muted-foreground" : isLowBalance ? "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"}`}>
         <div className="flex items-start gap-2.5">
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+          {loading ? (
+            <Loader2 className="h-4 w-4 shrink-0 text-muted-foreground animate-spin mt-0.5" />
+          ) : (
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+          )}
           <div className="space-y-1">
             <p className="font-semibold text-foreground">
-              {isLowBalance ? "⚠️ Low Balance Alert: Current Meta Balance is ₹" + currentBalance.toFixed(2) : "Meta WhatsApp Billing Active"}
+              {loading ? (
+                "Loading Meta WhatsApp Billing & Balance..."
+              ) : isLowBalance ? (
+                `⚠️ Low Balance Alert: Current Meta Balance is ₹${currentBalance.toFixed(2)}`
+              ) : (
+                `Meta WhatsApp Billing Active (Balance: ₹${currentBalance.toFixed(2)})`
+              )}
             </p>
             <p className="text-muted-foreground leading-relaxed">
-              WhatsApp messaging charges are billed directly by <strong>Meta</strong> from your Meta Business Account prepaid balance. If your balance is low or runs out, broadcasts will fail with payment errors (such as <code>131056</code> / <code>131042</code>). Please <strong>go to your Meta Business Manager to add funds</strong> whenever balance is low.
+              {loading ? (
+                "Fetching live account data and usage analytics from Meta Graph API..."
+              ) : (
+                <>
+                  WhatsApp messaging charges are billed directly by <strong>Meta</strong> from your Meta Business Account prepaid balance. If your balance is low or runs out, broadcasts will fail with payment errors (such as <code>131056</code> / <code>131042</code>). Please <strong>go to your Meta Business Manager to add funds</strong> whenever balance is low.
+                </>
+              )}
             </p>
           </div>
         </div>

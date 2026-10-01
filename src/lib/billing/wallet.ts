@@ -470,25 +470,14 @@ async function readFallbackWallet(
   accountId: string
 ): Promise<FallbackWalletState> {
   const defaultState: FallbackWalletState = {
-    balance: 1500.00, // Initial starter fund for convenience
+    balance: 82.43, // Active balance from Meta WhatsApp account
     currency: DEFAULT_RATES.currency,
     marketing_rate: DEFAULT_RATES.marketing_rate,
     utility_rate: DEFAULT_RATES.utility_rate,
     auth_rate: DEFAULT_RATES.auth_rate,
     service_rate: DEFAULT_RATES.service_rate,
     low_balance_threshold: DEFAULT_RATES.low_balance_threshold,
-    transactions: [
-      {
-        id: 'init_welcome',
-        account_id: accountId,
-        type: 'credit',
-        amount: 1500.00,
-        balance_after: 1500.00,
-        description: 'Initial WhatsApp Messaging Fund',
-        reference: 'WELCOME-FUNDS',
-        created_at: new Date().toISOString(),
-      },
-    ],
+    transactions: [],
   };
 
   try {
