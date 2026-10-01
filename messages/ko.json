@@ -140,10 +140,13 @@
     "conversationList": {
       "searchPlaceholder": "대화 검색...",
       "filterAll": "전체",
+      "filterActiveWindow": "24시간 활성 창",
       "filterUnread": "읽지 않음",
       "filterOpen": "열림",
       "filterPending": "대기 중",
       "filterClosed": "닫힘",
+      "activeWindow": "24시간 활성",
+      "activeWindowTooltip": "24시간 WhatsApp 메시징 창 내의 대화",
       "tags": "태그",
       "company": "회사",
       "allCompanies": "전체 회사",

@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   matchesContactFilters,
   normalizeConversation,
+  isConversationWindowActive,
+  getConversationWindowRemaining,
 } from "./conversations";
 import type { Conversation } from "@/types";
 
@@ -141,5 +143,74 @@ describe("normalizeConversation", () => {
     };
     // A contactless row passes through untouched (consumers use `?.`).
     expect(normalizeConversation(raw).contact).toBeNull();
+  });
+
+  it("extracts last_customer_message_at from embedded messages", () => {
+    const raw = {
+      id: "c1",
+      user_id: "u1",
+      contact_id: "ct1",
+      status: "open" as const,
+      unread_count: 0,
+      created_at: "",
+      updated_at: "",
+      contact: null,
+      messages: [{ created_at: "2026-10-01T12:00:00Z" }],
+    };
+    const normalized = normalizeConversation(raw);
+    expect(normalized.last_customer_message_at).toBe("2026-10-01T12:00:00Z");
+  });
+});
+
+describe("isConversationWindowActive", () => {
+  it("returns false when last_customer_message_at is null or missing", () => {
+    const conv = makeConversation(null);
+    expect(isConversationWindowActive(conv)).toBe(false);
+  });
+
+  it("returns true when customer messaged less than 24 hours ago", () => {
+    const conv = {
+      ...makeConversation(null),
+      last_customer_message_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    };
+    expect(isConversationWindowActive(conv)).toBe(true);
+  });
+
+  it("returns false when customer messaged 25 hours ago", () => {
+    const conv = {
+      ...makeConversation(null),
+      last_customer_message_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    };
+    expect(isConversationWindowActive(conv)).toBe(false);
+  });
+});
+
+describe("getConversationWindowRemaining", () => {
+  it("returns null when no customer message exists", () => {
+    const conv = makeConversation(null);
+    expect(getConversationWindowRemaining(conv)).toBeNull();
+  });
+
+  it("returns active and remaining hours when under 24 hours", () => {
+    const conv = {
+      ...makeConversation(null),
+      last_customer_message_at: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+    };
+    const res = getConversationWindowRemaining(conv);
+    expect(res).not.toBeNull();
+    expect(res?.active).toBe(true);
+    expect(res?.hoursLeft).toBeGreaterThan(19);
+    expect(res?.label).toContain("h left");
+  });
+
+  it("returns expired when past 24 hours", () => {
+    const conv = {
+      ...makeConversation(null),
+      last_customer_message_at: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
+    };
+    const res = getConversationWindowRemaining(conv);
+    expect(res).not.toBeNull();
+    expect(res?.active).toBe(false);
+    expect(res?.label).toBe("Expired");
   });
 });

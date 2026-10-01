@@ -140,10 +140,13 @@
     "conversationList": {
       "searchPlaceholder": "Buscar conversas...",
       "filterAll": "Todas",
+      "filterActiveWindow": "Janela ativa 24h",
       "filterUnread": "Não lidas",
       "filterOpen": "Abertas",
       "filterPending": "Pendentes",
       "filterClosed": "Fechadas",
+      "activeWindow": "Ativas 24h",
+      "activeWindowTooltip": "Conversas dentro da janela de 24 horas do WhatsApp",
       "tags": "Tags",
       "company": "Empresa",
       "allCompanies": "Todas as empresas",

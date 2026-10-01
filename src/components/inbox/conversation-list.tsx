@@ -4,12 +4,15 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   CONVERSATION_SELECT,
+  INBOX_CONVERSATION_SELECT,
   matchesContactFilters,
   normalizeConversations,
+  isConversationWindowActive,
+  getConversationWindowRemaining,
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X } from "lucide-react";
+import { Search, ChevronDown, X, Clock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";
@@ -44,7 +47,7 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
 
 
 
-type InboxFilter = ConversationStatus | "all" | "unread";
+type InboxFilter = ConversationStatus | "all" | "unread" | "active_window";
 
 export function ConversationList({
   activeConversationId,
@@ -57,6 +60,7 @@ export function ConversationList({
   
   const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = useMemo(() => [
     { label: t("filterAll"), value: "all" },
+    { label: t("filterActiveWindow"), value: "active_window" },
     { label: t("filterUnread"), value: "unread" },
     { label: t("filterOpen"), value: "open" },
     { label: t("filterPending"), value: "pending" },
@@ -97,8 +101,11 @@ export function ConversationList({
     (async () => {
       const { data, error } = await supabase
         .from("conversations")
-        .select(CONVERSATION_SELECT)
-        .order("last_message_at", { ascending: false });
+        .select(INBOX_CONVERSATION_SELECT)
+        .eq("messages.sender_type", "customer")
+        .order("created_at", { foreignTable: "messages", ascending: false })
+        .limit(1, { foreignTable: "messages" })
+        .order("last_message_at", { ascending: false, nullsFirst: false });
 
       if (cancelled) return;
 
@@ -158,11 +165,17 @@ export function ConversationList({
     return m;
   }, [tags]);
 
+  const activeWindowCount = useMemo(() => {
+    return conversations.filter(isConversationWindowActive).length;
+  }, [conversations]);
+
   const filtered = useMemo(() => {
     let result = conversations;
 
     if (filter === "unread") {
       result = result.filter((c) => c.unread_count > 0);
+    } else if (filter === "active_window") {
+      result = result.filter(isConversationWindowActive);
     } else if (filter !== "all") {
       result = result.filter((c) => c.status === filter);
     }
@@ -187,7 +200,12 @@ export function ConversationList({
       });
     }
 
-    return result;
+    // Keep conversations ordered newest last_message_at first; nulls placed last
+    return [...result].sort((a, b) => {
+      const aTime = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+      const bTime = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+      return bTime - aTime;
+    });
   }, [conversations, filter, search, selectedTagIds, selectedCompany]);
 
   const toggleTag = useCallback((id: string) => {
@@ -262,6 +280,36 @@ export function ConversationList({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* Quick Active 24h Window Toggle Button */}
+          <button
+            type="button"
+            onClick={() =>
+              setFilter((prev) => (prev === "active_window" ? "all" : "active_window"))
+            }
+            className={cn(
+              "inline-flex items-center gap-1.5 h-7 px-2 text-xs rounded-md font-medium transition-colors",
+              filter === "active_window"
+                ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted"
+            )}
+            title={t("activeWindowTooltip")}
+          >
+            <Clock className="h-3 w-3 text-emerald-500" />
+            <span>{t("activeWindow")}</span>
+            {activeWindowCount > 0 && (
+              <span
+                className={cn(
+                  "flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold",
+                  filter === "active_window"
+                    ? "bg-emerald-500 text-white"
+                    : "bg-muted text-muted-foreground"
+                )}
+              >
+                {activeWindowCount}
+              </span>
+            )}
+          </button>
 
           {tags.length > 0 && (
             <DropdownMenu>
@@ -450,6 +498,8 @@ function ConversationItem({
       })
     : "";
 
+  const windowInfo = getConversationWindowRemaining(conversation);
+
   return (
     <button
       onClick={handleClick}
@@ -484,6 +534,15 @@ function ConversationItem({
             {conversation.last_message_text || t("noMessagesYet")}
           </p>
           <div className="flex shrink-0 items-center gap-1.5">
+            {windowInfo?.active && (
+              <span
+                className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
+                title={t("activeWindowTooltip")}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                {windowInfo.label}
+              </span>
+            )}
             {conversation.unread_count > 0 && (
               <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
                 {conversation.unread_count}

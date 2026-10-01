@@ -18,8 +18,20 @@ describe('syncBroadcastMessagesToConversation', () => {
     const insertedMessages: Record<string, unknown>[] = []
     const updatedRecipients: Record<string, unknown>[] = []
 
+    const updatedConversations: Record<string, unknown>[] = []
+
     const fakeDb = {
       from: (table: string) => {
+        if (table === 'conversations') {
+          return {
+            update: (patch: Record<string, unknown>) => {
+              updatedConversations.push(patch)
+              return {
+                eq: () => Promise.resolve({ error: null }),
+              }
+            },
+          }
+        }
         if (table === 'broadcast_recipients') {
           return {
             select: () => ({
@@ -97,6 +109,11 @@ describe('syncBroadcastMessagesToConversation', () => {
     })
     expect(updatedRecipients).toHaveLength(1)
     expect(updatedRecipients[0].status).toBe('replied')
+    expect(updatedConversations).toHaveLength(1)
+    expect(updatedConversations[0]).toMatchObject({
+      last_message_at: '2026-09-29T10:00:00Z',
+      last_message_text: 'Hello Ritibrataa, welcome to Junior Training!',
+    })
   })
 
   it('skips insertion if message already exists in messages table', async () => {

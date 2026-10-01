@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import {
   CONVERSATION_SELECT,
+  INBOX_CONVERSATION_SELECT,
   normalizeConversation,
 } from "@/lib/inbox/conversations";
 import type { Conversation, Message, Contact, ConversationStatus, Tag } from "@/types";
@@ -142,8 +143,11 @@ function InboxPageInner() {
       const supabase = createClient();
       const { data, error } = await supabase
         .from("conversations")
-        .select(CONVERSATION_SELECT)
+        .select(INBOX_CONVERSATION_SELECT)
         .eq("id", convId)
+        .eq("messages.sender_type", "customer")
+        .order("created_at", { foreignTable: "messages", ascending: false })
+        .limit(1, { foreignTable: "messages" })
         .maybeSingle();
       if (error) {
         // Supabase errors have non-enumerable properties — log fields
@@ -247,6 +251,7 @@ function InboxPageInner() {
         // knownConvIdsRef for why a closure flag inside the updater would
         // always read false here.
         if (knownConvIdsRef.current.has(newMsg.conversation_id)) {
+          const isCustomer = newMsg.sender_type === "customer";
           setConversations((prev) =>
             prev.map((c) =>
               c.id === newMsg.conversation_id
@@ -254,6 +259,9 @@ function InboxPageInner() {
                     ...c,
                     last_message_text: newMsg.content_text ?? "",
                     last_message_at: newMsg.created_at,
+                    last_customer_message_at: isCustomer
+                      ? newMsg.created_at
+                      : c.last_customer_message_at,
                     unread_count:
                       activeConversation?.id === newMsg.conversation_id
                         ? 0
@@ -262,6 +270,11 @@ function InboxPageInner() {
                 : c,
             ),
           );
+          if (isCustomer && activeConversation?.id === newMsg.conversation_id) {
+            setActiveConversation((prev) =>
+              prev ? { ...prev, last_customer_message_at: newMsg.created_at } : prev,
+            );
+          }
         } else {
           // First time we're seeing this conv: the conv-INSERT event
           // hasn't landed yet, or was missed. Hydrate from the DB so

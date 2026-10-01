@@ -52,6 +52,8 @@ export async function syncBroadcastMessagesToConversation(
     if (error || !recs || recs.length === 0) return 0
 
     let syncedCount = 0
+    let latestSentAt: string | null = null
+    let latestContentText: string | null = null
 
     for (const row of recs) {
       if (!row.whatsapp_message_id) continue
@@ -109,23 +111,47 @@ export async function syncBroadcastMessagesToConversation(
             ? 'delivered'
             : 'sent'
 
+      const msgSentAt = row.sent_at || row.created_at || new Date().toISOString()
+      const preview =
+        contentText ||
+        (templateName ? `[Template: ${templateName}]` : '[Broadcast Message]')
+
       const { error: insertErr } = await db.from('messages').insert({
         conversation_id: conversationId,
         sender_type: 'agent',
         content_type: 'template',
-        content_text:
-          contentText ||
-          (templateName ? `[Template: ${templateName}]` : '[Broadcast Message]'),
+        content_text: preview,
         template_name: templateName ?? null,
         message_id: row.whatsapp_message_id,
         status: msgStatus,
-        created_at: row.sent_at || row.created_at || new Date().toISOString(),
+        created_at: msgSentAt,
       })
 
       if (!insertErr) {
         syncedCount++
+        if (!latestSentAt || new Date(msgSentAt) > new Date(latestSentAt)) {
+          latestSentAt = msgSentAt
+          latestContentText = preview
+        }
       } else {
         console.error('[broadcast-sync] Error inserting broadcast message:', insertErr)
+      }
+    }
+
+    if (syncedCount > 0 && latestSentAt) {
+      try {
+        const convTable = db.from('conversations')
+        if (convTable && typeof convTable.update === 'function') {
+          await convTable
+            .update({
+              last_message_at: latestSentAt,
+              last_message_text: latestContentText,
+            })
+            .eq('id', conversationId)
+        }
+      } catch (convErr) {
+        // Non-critical; ignore if conversation update fails
+        console.warn('[broadcast-sync] Could not update conversation preview:', convErr)
       }
     }
 

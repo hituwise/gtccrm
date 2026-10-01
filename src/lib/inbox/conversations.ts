@@ -9,24 +9,45 @@ import type { Conversation, Contact, Tag } from "@/types";
 export const CONVERSATION_SELECT =
   "*, contact:contacts(*, contact_tags(tags(*)))";
 
-/** Raw shape returned by {@link CONVERSATION_SELECT} before flattening. */
+/**
+ * Inbox-specific select that also embeds the latest customer message timestamp,
+ * allowing the Inbox to calculate active 24-hour WhatsApp messaging window status.
+ */
+export const INBOX_CONVERSATION_SELECT =
+  "*, contact:contacts(*, contact_tags(tags(*))), messages(created_at)";
+
+/** Raw shape returned by {@link CONVERSATION_SELECT} or {@link INBOX_CONVERSATION_SELECT} before flattening. */
 type RawContact = Contact & { contact_tags?: { tags: Tag | null }[] };
 type RawConversation = Omit<Conversation, "contact"> & {
   contact?: RawContact | null;
+  messages?: { created_at: string }[];
 };
 
 /**
- * Flatten the embedded `contact_tags(tags(*))` join into `contact.tags`.
+ * Flatten the embedded `contact_tags(tags(*))` join into `contact.tags`, and
+ * derive `last_customer_message_at` from the embedded latest customer message if not already set.
  * Safe to call on rows fetched with {@link CONVERSATION_SELECT}; a row with
  * no contact (e.g. a freshly-inserted conversation) passes through untouched.
  */
 export function normalizeConversation(raw: RawConversation): Conversation {
   const rawContact = raw.contact;
-  if (!rawContact) return raw as Conversation;
+  const rawMessages = raw.messages;
+
+  // Derive last_customer_message_at from the relation if not directly on the conversation row
+  const lastCustomerMessageAt =
+    raw.last_customer_message_at ??
+    (rawMessages && rawMessages.length > 0 ? rawMessages[0].created_at : null);
+
+  const base: Conversation = {
+    ...(raw as unknown as Conversation),
+    last_customer_message_at: lastCustomerMessageAt,
+  };
+
+  if (!rawContact) return base;
 
   const { contact_tags, ...contact } = rawContact;
   return {
-    ...raw,
+    ...base,
     contact: {
       ...contact,
       tags: (contact_tags ?? [])
@@ -40,6 +61,39 @@ export function normalizeConversations(
   rows: RawConversation[],
 ): Conversation[] {
   return rows.map(normalizeConversation);
+}
+
+/**
+ * Check whether a conversation is currently within its 24-hour WhatsApp messaging window.
+ * The 24-hour window starts when the customer sends an inbound message.
+ */
+export function isConversationWindowActive(conversation: Conversation): boolean {
+  if (!conversation.last_customer_message_at) return false;
+  const elapsedMs = Date.now() - new Date(conversation.last_customer_message_at).getTime();
+  const maxWindowMs = 24 * 60 * 60 * 1000;
+  return elapsedMs >= 0 && elapsedMs < maxWindowMs;
+}
+
+/**
+ * Returns remaining time information for an active 24-hour window, or null if expired/no customer message.
+ */
+export function getConversationWindowRemaining(conversation: Conversation): {
+  active: boolean;
+  hoursLeft: number;
+  label: string;
+} | null {
+  if (!conversation.last_customer_message_at) return null;
+  const elapsedMs = Date.now() - new Date(conversation.last_customer_message_at).getTime();
+  const maxWindowMs = 24 * 60 * 60 * 1000;
+  if (elapsedMs < 0 || elapsedMs >= maxWindowMs) {
+    return { active: false, hoursLeft: 0, label: "Expired" };
+  }
+  const hoursLeft = (maxWindowMs - elapsedMs) / (1000 * 60 * 60);
+  const label =
+    hoursLeft >= 1
+      ? `${Math.floor(hoursLeft)}h left`
+      : `${Math.floor(hoursLeft * 60)}m left`;
+  return { active: true, hoursLeft, label };
 }
 
 export interface ContactFilters {
