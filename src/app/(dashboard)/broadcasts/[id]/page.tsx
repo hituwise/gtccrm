@@ -34,6 +34,8 @@ import {
   Trash2,
   PlayCircle,
   RotateCcw,
+  Calendar,
+  Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -409,9 +411,54 @@ export default function BroadcastDetailPage() {
         )}
       </div>
 
+      {/* Scheduled broadcast banner with instant dispatch action */}
+      {broadcast.status === 'scheduled' && (
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg bg-amber-500/20 p-2 text-amber-500">
+              <Calendar className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="font-semibold text-foreground">
+                Scheduled for Event Broadcast
+              </p>
+              <p className="text-sm text-muted-foreground mt-0.5">
+                {broadcast.scheduled_at ? (
+                  <>
+                    Set to automatically dispatch on{' '}
+                    <span className="font-medium text-amber-300">
+                      {new Date(broadcast.scheduled_at).toLocaleString([], {
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      })}
+                    </span>{' '}
+                    ({pendingCount} recipient{pendingCount === 1 ? '' : 's'} queued)
+                  </>
+                ) : (
+                  <>Scheduled to send to {pendingCount} queued recipients.</>
+                )}
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => handleResume('pending')}
+            disabled={resumingScope !== null}
+            className="bg-amber-600 hover:bg-amber-700 text-white font-medium"
+          >
+            {resumingScope === 'pending' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+            ) : (
+              <Send className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            Send Now (Trigger Immediately)
+          </Button>
+        </div>
+      )}
+
       {/* Resume / retry (issue #472). Only rendered when there is
-          actually something outstanding. */}
-      {(pendingCount > 0 || retryableCount > 0) && (
+          actually something outstanding and it's not a future scheduled campaign. */}
+      {broadcast.status !== 'scheduled' && (pendingCount > 0 || retryableCount > 0) && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
           <div className="text-sm">
             <p className="font-medium text-foreground">

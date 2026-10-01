@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { createClient } from '@/lib/supabase/client';
 import { Broadcast } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -13,11 +14,19 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Radio, Plus, Loader2 } from 'lucide-react';
+import {
+  Radio,
+  Plus,
+  Loader2,
+  Calendar,
+  Clock,
+  Send as SendIcon,
+} from 'lucide-react';
+import { toast } from 'sonner';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { getBroadcastStatus } from '@/lib/broadcast-status';
-import { useTranslations } from 'next-intl';
+import { BillingWalletCard } from '@/components/broadcasts/billing-wallet-card';
 
 /**
  * Poll cadence while any broadcast is sending. Kept modest so we don't
@@ -65,6 +74,8 @@ export default function BroadcastsPage() {
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filterTab, setFilterTab] = useState<'all' | 'sent' | 'scheduled' | 'draft' | 'failed'>('all');
+  const [dispatchingId, setDispatchingId] = useState<string | null>(null);
 
   // Used to kick off polling only while something is actively sending.
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -86,8 +97,17 @@ export default function BroadcastsPage() {
     }
   }
 
+  // On page load, also check if any scheduled broadcasts are due
   useEffect(() => {
     fetchBroadcasts();
+    fetch('/api/broadcasts/cron')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.processed > 0) {
+          fetchBroadcasts();
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const anySending = useMemo(
@@ -130,6 +150,37 @@ export default function BroadcastsPage() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [anySending]);
+
+  async function handleSendNow(broadcastId: string) {
+    setDispatchingId(broadcastId);
+    try {
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'pending' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to dispatch broadcast');
+      }
+      toast.success('Campaign dispatch started!');
+      await fetchBroadcasts();
+    } catch (err: unknown) {
+      toast.error((err as { message?: string })?.message || 'Could not send broadcast');
+    } finally {
+      setDispatchingId(null);
+    }
+  }
+
+  const filteredBroadcasts = useMemo(() => {
+    if (filterTab === 'all') return broadcasts;
+    return broadcasts.filter((b) => b.status === filterTab);
+  }, [broadcasts, filterTab]);
+
+  const scheduledCount = useMemo(
+    () => broadcasts.filter((b) => b.status === 'scheduled').length,
+    [broadcasts]
+  );
 
   if (loading) {
     return (
@@ -180,6 +231,7 @@ export default function BroadcastsPage() {
         </div>
       )}
 
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">{t('title')}</h1>
@@ -198,22 +250,95 @@ export default function BroadcastsPage() {
         </GatedButton>
       </div>
 
-      {broadcasts.length === 0 ? (
-        <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-border bg-card">
+      {/* Messaging Fund Wallet & Billing Card */}
+      <BillingWalletCard onFundsUpdated={fetchBroadcasts} />
+
+      {/* Filter Tabs */}
+      <div className="flex items-center gap-1.5 overflow-x-auto border-b border-border pb-2 text-xs">
+        <button
+          type="button"
+          onClick={() => setFilterTab('all')}
+          className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${
+            filterTab === 'all'
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+          }`}
+        >
+          All Campaigns ({broadcasts.length})
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterTab('scheduled')}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium transition-colors ${
+            filterTab === 'scheduled'
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+          }`}
+        >
+          <Calendar className="size-3.5" />
+          Scheduled ({scheduledCount})
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterTab('sent')}
+          className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${
+            filterTab === 'sent'
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+          }`}
+        >
+          Sent ({broadcasts.filter((b) => b.status === 'sent').length})
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterTab('draft')}
+          className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${
+            filterTab === 'draft'
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+          }`}
+        >
+          Drafts ({broadcasts.filter((b) => b.status === 'draft').length})
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterTab('failed')}
+          className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${
+            filterTab === 'failed'
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+          }`}
+        >
+          Failed ({broadcasts.filter((b) => b.status === 'failed').length})
+        </button>
+      </div>
+
+      {filteredBroadcasts.length === 0 ? (
+        <div className="flex h-56 flex-col items-center justify-center rounded-xl border border-border bg-card">
           <Radio className="mb-3 h-10 w-10 text-muted-foreground" />
-          <p className="text-sm font-medium text-foreground">{t('noBroadcastsYet')}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t('createFirst')}
+          <p className="text-sm font-medium text-foreground">
+            {filterTab === 'all'
+              ? t('noBroadcastsYet')
+              : `No ${filterTab} broadcasts found.`}
           </p>
-          <GatedButton
-            canAct={canCreate}
-            gateReason="create broadcasts"
-            onClick={() => router.push('/broadcasts/new')}
-            className="mt-4 bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="h-4 w-4" />
-            {t('newBroadcast')}
-          </GatedButton>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {filterTab === 'all' ? t('createFirst') : 'Try selecting another tab.'}
+          </p>
+          {filterTab === 'all' && (
+            <GatedButton
+              canAct={canCreate}
+              gateReason="create broadcasts"
+              onClick={() => router.push('/broadcasts/new')}
+              className="mt-4 bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Plus className="h-4 w-4" />
+              {t('newBroadcast')}
+            </GatedButton>
+          )}
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-border bg-card">
@@ -229,11 +354,13 @@ export default function BroadcastsPage() {
                 <TableHead className="hidden text-muted-foreground lg:table-cell">{t('table.read')}</TableHead>
                 <TableHead className="text-muted-foreground">{t('table.status')}</TableHead>
                 <TableHead className="hidden text-muted-foreground sm:table-cell">{t('table.date')}</TableHead>
+                <TableHead className="text-right text-muted-foreground">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {broadcasts.map((broadcast) => {
+              {filteredBroadcasts.map((broadcast) => {
                 const status = getBroadcastStatus(broadcast.status);
+                const isScheduled = broadcast.status === 'scheduled';
                 return (
                   <TableRow
                     key={broadcast.id}
@@ -241,7 +368,18 @@ export default function BroadcastsPage() {
                     onClick={() => router.push(`/broadcasts/${broadcast.id}`)}
                   >
                     <TableCell className="font-medium text-foreground">
-                      {broadcast.name}
+                      <div className="space-y-0.5">
+                        <p>{broadcast.name}</p>
+                        {isScheduled && broadcast.scheduled_at && (
+                          <p className="flex items-center gap-1 text-[11px] text-blue-500 font-normal">
+                            <Clock className="size-3" />
+                            Scheduled: {new Date(broadcast.scheduled_at).toLocaleString(undefined, {
+                              dateStyle: 'medium',
+                              timeStyle: 'short',
+                            })}
+                          </p>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground md:table-cell">
                       {broadcast.template_name}
@@ -273,11 +411,39 @@ export default function BroadcastsPage() {
                             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-yellow-400" />
                           </span>
                         )}
+                        {isScheduled && <Calendar className="size-3" />}
                         {tStatus(status.label)}
                       </span>
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground sm:table-cell">
                       {new Date(broadcast.created_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      {isScheduled ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleSendNow(broadcast.id)}
+                          disabled={dispatchingId === broadcast.id}
+                          className="h-7 text-xs gap-1 border-primary/30 text-primary hover:bg-primary/10"
+                        >
+                          {dispatchingId === broadcast.id ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <SendIcon className="size-3" />
+                          )}
+                          Send Now
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => router.push(`/broadcasts/${broadcast.id}`)}
+                          className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          View
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 );

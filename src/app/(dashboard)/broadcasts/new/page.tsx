@@ -46,7 +46,7 @@ export default function NewBroadcastPage() {
   const [headerMediaUrl, setHeaderMediaUrl] = useState('');
   const [name, setName] = useState('');
 
-  async function handleSend() {
+  async function handleSend(scheduledAt?: string | null) {
     if (!template) return;
 
     try {
@@ -62,7 +62,14 @@ export default function NewBroadcastPage() {
         },
         variables,
         headerMediaUrl,
+        scheduledAt,
       });
+
+      if (scheduledAt) {
+        toast.success(`Broadcast "${name}" scheduled successfully!`, {
+          description: `Will automatically be dispatched on ${new Date(scheduledAt).toLocaleString()}`,
+        });
+      }
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
       // Previously swallowed with console.error — the wizard would

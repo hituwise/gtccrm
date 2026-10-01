@@ -414,6 +414,33 @@ export interface Deal {
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
 export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed';
 
+export interface AccountWallet {
+  account_id: string;
+  balance: number;
+  currency: string;
+  marketing_rate: number;
+  utility_rate: number;
+  auth_rate: number;
+  service_rate: number;
+  low_balance_threshold: number;
+  total_added?: number;
+  total_spent?: number;
+  updated_at: string;
+}
+
+export interface BillingTransaction {
+  id: string;
+  account_id: string;
+  user_id?: string | null;
+  type: 'credit' | 'debit';
+  amount: number;
+  balance_after: number;
+  description: string;
+  reference?: string | null;
+  broadcast_id?: string | null;
+  created_at: string;
+}
+
 export interface Broadcast {
   id: string;
   user_id: string;

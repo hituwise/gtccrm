@@ -51,6 +51,8 @@ interface BroadcastPayload {
    * falls back to the template's stored URL only when this is empty.
    */
   headerMediaUrl?: string;
+  /** Future ISO date string to schedule for an event instead of sending immediately */
+  scheduledAt?: string | null;
 }
 
 interface UseBroadcastSendingReturn {
@@ -377,6 +379,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
 
       // ── Step 2: Create broadcast row ──────────────────────────────
       setProgress(10);
+      const isScheduled = Boolean(payload.scheduledAt);
       const { data: broadcast, error: broadcastError } = await supabase
         .from('broadcasts')
         .insert({
@@ -392,7 +395,8 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
             customField: payload.audience.customField,
             excludeTagIds: payload.audience.excludeTagIds,
           },
-          status: 'sending',
+          status: isScheduled ? 'scheduled' : 'sending',
+          scheduled_at: payload.scheduledAt ?? null,
           total_recipients: contacts.length,
           sent_count: 0,
           delivered_count: 0,
@@ -461,6 +465,13 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
             `Failed to insert recipient batch ${i / INSERT_BATCH_SIZE + 1}: ${recipientError.message}`,
           );
         }
+      }
+
+      // If scheduled for a future event, we stop here: recipients are persisted
+      // and the scheduler/cron or manual send will trigger delivery at the scheduled time.
+      if (isScheduled) {
+        setProgress(100);
+        return broadcast.id;
       }
 
       // ── Step 4: Fetch recipients back (joined contact) ────────────
