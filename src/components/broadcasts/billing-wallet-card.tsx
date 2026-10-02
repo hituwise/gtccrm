@@ -13,16 +13,12 @@ import {
   ShieldCheck,
   TrendingUp,
   RefreshCw,
-  Edit2,
-  Save,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -39,9 +35,6 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
   const [refreshing, setRefreshing] = useState(false);
   const [showRatesModal, setShowRatesModal] = useState(false);
   const [showUsageModal, setShowUsageModal] = useState(false);
-  const [showSyncModal, setShowSyncModal] = useState(false);
-  const [syncInput, setSyncInput] = useState<string>("82.43");
-  const [syncing, setSyncing] = useState(false);
 
   async function loadBilling(isManual = false) {
     if (isManual) setRefreshing(true);
@@ -51,10 +44,16 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
       const data = await res.json();
       if (data.metaBilling) {
         setMetaBilling(data.metaBilling);
-        setSyncInput(data.metaBilling.currentBalance?.toString() || "82.43");
+      }
+      if (isManual) {
+        toast.success("Meta billing data refreshed");
+        onFundsUpdated?.();
       }
     } catch (err) {
       console.warn("[BillingWalletCard] load error:", err);
+      if (isManual) {
+        toast.error("Could not refresh Meta billing");
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -64,34 +63,6 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
   useEffect(() => {
     loadBilling();
   }, []);
-
-  async function handleSyncBalance() {
-    const bal = parseFloat(syncInput);
-    if (isNaN(bal) || bal < 0) {
-      toast.error("Please enter a valid balance.");
-      return;
-    }
-    setSyncing(true);
-    try {
-      const res = await fetch("/api/billing/funds", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ current_balance: bal }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to update balance");
-      }
-      toast.success(`Meta Balance updated to ₹${bal.toFixed(2)}!`);
-      setShowSyncModal(false);
-      await loadBilling();
-      onFundsUpdated?.();
-    } catch (err: unknown) {
-      toast.error((err as { message?: string })?.message || "Failed to update balance");
-    } finally {
-      setSyncing(false);
-    }
-  }
 
   const metaBillingUrl =
     metaBilling?.whatsappManagerUrl || "https://business.facebook.com/billing_hub";
@@ -122,7 +93,7 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
                 "Connecting to Meta WhatsApp Business Account..."
               ) : metaBilling?.wabaName ? (
                 <>
-                  Account: <strong className="text-foreground">{metaBilling.wabaName}</strong> (Payment Account: 2101170583827889)
+                  Account: <strong className="text-foreground">{metaBilling.wabaName}</strong>
                 </>
               ) : (
                 "Direct connection to your Meta WhatsApp Business Account"
@@ -206,11 +177,12 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
             <span className="font-medium text-foreground">Current Balance</span>
             <button
               type="button"
-              onClick={() => setShowSyncModal(true)}
-              className="text-primary hover:underline inline-flex items-center gap-0.5 text-[11px]"
-              title="Update balance from Meta"
+              onClick={() => loadBilling(true)}
+              disabled={refreshing || loading}
+              className="text-primary hover:text-primary/80 inline-flex items-center gap-1 text-[11px] font-medium transition-colors"
+              title="Refresh live Meta data"
             >
-              <Edit2 className="h-3 w-3" /> Sync
+              <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} /> Refresh
             </button>
           </div>
           <div className="text-2xl font-extrabold text-primary">
@@ -220,7 +192,17 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
               `₹${currentBalance.toFixed(2)}`
             )}
           </div>
-          <p className="text-[11px] text-muted-foreground">Remaining in Meta account</p>
+          <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-0.5">
+            <span>Remaining in Meta</span>
+            <a
+              href={metaBillingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline inline-flex items-center gap-0.5"
+            >
+              Meta Hub <ExternalLink className="h-2.5 w-2.5" />
+            </a>
+          </div>
         </div>
 
         {/* 30-Day Meta Spend (Clearly labeled as total expenditure) */}
@@ -303,72 +285,6 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
           </a>
         </div>
       </div>
-
-      {/* Modal: Sync / Update Balance */}
-      <Dialog open={showSyncModal} onOpenChange={setShowSyncModal}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Wallet className="h-5 w-5 text-primary" />
-              Update Current Meta Balance
-            </DialogTitle>
-            <DialogDescription>
-              After topping up funds in Meta Business Manager, update your current balance here to keep broadcast calculations and alerts accurate.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-3 py-2 text-sm">
-            <div>
-              <label className="text-xs font-medium text-foreground mb-1 block">
-                Current Meta Balance (INR ₹)
-              </label>
-              <div className="relative">
-                <span className="absolute left-3 top-2 text-muted-foreground font-semibold">₹</span>
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={syncInput}
-                  onChange={(e) => setSyncInput(e.target.value)}
-                  className="pl-7"
-                  placeholder="82.43"
-                />
-              </div>
-            </div>
-
-            <p className="text-xs text-muted-foreground">
-              You can check your exact current balance anytime at{" "}
-              <a
-                href={metaBillingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline inline-flex items-center gap-0.5"
-              >
-                Meta Billing Hub <ExternalLink className="h-2.5 w-2.5" />
-              </a>
-            </p>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowSyncModal(false)}
-              disabled={syncing}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleSyncBalance}
-              disabled={syncing || !syncInput}
-              className="gap-1.5"
-            >
-              {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              Save Balance
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Modal: Official Meta Rate Card */}
       <Dialog open={showRatesModal} onOpenChange={setShowRatesModal}>
