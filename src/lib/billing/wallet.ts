@@ -37,7 +37,7 @@ export async function getMetaBillingDetails(
     currency: 'INR',
     billingHubUrl: 'https://business.facebook.com/billing_hub',
     whatsappManagerUrl: 'https://business.facebook.com/wa/manage/home/',
-    currentBalance: 82.43,
+    currentBalance: 0,
     totalCost30d: 0,
     totalVolume30d: 0,
     recentDataPoints: [],
@@ -111,14 +111,23 @@ export async function getMetaBillingDetails(
     let dataPoints: { start: number; end: number; cost: number; volume: number }[] = [];
 
     if (analyticsRes && analyticsRes.ok) {
-      const analyticsJson = await analyticsRes.json().catch(() => ({}));
-      const rawPoints = analyticsJson.pricing_analytics?.data?.[0]?.data_points || [];
-      dataPoints = rawPoints.map((dp: any) => ({
-        start: Number(dp.start || 0),
-        end: Number(dp.end || 0),
-        cost: Math.round(Number(dp.cost || 0) * 100) / 100,
-        volume: Number(dp.volume || 0),
-      }));
+      const analyticsJson = (await analyticsRes.json().catch(() => ({}))) as Record<string, unknown>;
+      const pricingAnalytics = analyticsJson?.pricing_analytics as Record<string, unknown> | undefined;
+      const dataArr = pricingAnalytics?.data as Array<Record<string, unknown>> | undefined;
+      const rawPoints = (dataArr?.[0]?.data_points as Array<Record<string, unknown>>) || [];
+      dataPoints = rawPoints.map(
+        (dp: {
+          start?: number | string;
+          end?: number | string;
+          cost?: number | string;
+          volume?: number | string;
+        }) => ({
+          start: Number(dp.start || 0),
+          end: Number(dp.end || 0),
+          cost: Math.round(Number(dp.cost || 0) * 100) / 100,
+          volume: Number(dp.volume || 0),
+        })
+      );
 
       for (const dp of dataPoints) {
         totalCost30d += dp.cost;
@@ -128,9 +137,8 @@ export async function getMetaBillingDetails(
 
     const currency = wabaJson.currency || 'INR';
 
-    // Current Meta Balance (defaults to active balance 82.43 INR if not yet synced)
     const wallet = await getAccountWallet(db, accountId);
-    const currentBalance = wallet.balance > 0 ? wallet.balance : 82.43;
+    const currentBalance = wallet.balance;
 
     return {
       connected: true,
@@ -470,7 +478,7 @@ async function readFallbackWallet(
   accountId: string
 ): Promise<FallbackWalletState> {
   const defaultState: FallbackWalletState = {
-    balance: 82.43, // Active balance from Meta WhatsApp account
+    balance: 0,
     currency: DEFAULT_RATES.currency,
     marketing_rate: DEFAULT_RATES.marketing_rate,
     utility_rate: DEFAULT_RATES.utility_rate,

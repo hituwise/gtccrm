@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { MessageTemplate, AccountWallet, MetaBillingDetails } from '@/types';
+import { MessageTemplate, MetaBillingDetails } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -21,15 +21,12 @@ import {
   Save,
   Calendar,
   Clock,
-  Wallet,
-  AlertTriangle,
   CheckCircle2,
   Coins,
   ArrowUpRight,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { calculateBroadcastCost, DEFAULT_RATES } from '@/lib/billing/wallet';
-import { toast } from 'sonner';
+import { calculateBroadcastCost } from '@/lib/billing/wallet';
 
 interface AudienceConfig {
   type: string;
@@ -67,8 +64,6 @@ export function Step4ScheduleSend({
 
   // Meta Billing state
   const [metaBilling, setMetaBilling] = useState<MetaBillingDetails | null>(null);
-  const [wallet, setWallet] = useState<AccountWallet | null>(null);
-  const [loadingWallet, setLoadingWallet] = useState(true);
 
   // Scheduling state: 'now' vs 'schedule'
   const [sendMode, setSendMode] = useState<'now' | 'schedule'>('now');
@@ -85,26 +80,22 @@ export function Step4ScheduleSend({
 
   const [scheduledDateTime, setScheduledDateTime] = useState<string>(defaultScheduleStr);
 
-  async function loadWallet() {
-    setLoadingWallet(true);
+  async function loadBillingDetails() {
     try {
       const res = await fetch('/api/billing/funds');
       if (res.ok) {
         const data = await res.json();
-        setWallet(data.wallet);
         if (data.metaBilling) {
           setMetaBilling(data.metaBilling);
         }
       }
     } catch (err) {
-      console.warn('[Step4ScheduleSend] wallet load error:', err);
-    } finally {
-      setLoadingWallet(false);
+      console.warn('[Step4ScheduleSend] billing load error:', err);
     }
   }
 
   useEffect(() => {
-    loadWallet();
+    loadBillingDetails();
   }, []);
 
   useEffect(() => {
@@ -144,9 +135,6 @@ export function Step4ScheduleSend({
     template.category,
     estimatedReach
   );
-
-  const currentBalance = metaBilling?.currentBalance ?? 82.43;
-  const deficit = Math.max(0, Math.round((totalCost - currentBalance) * 100) / 100);
 
   // Quick schedule presets
   const setQuickSchedule = (hoursAhead: number) => {
@@ -228,66 +216,42 @@ export function Step4ScheduleSend({
           </div>
 
           <div>
-            <p className="text-muted-foreground">Required Meta Funds</p>
+            <p className="text-muted-foreground">Estimated Meta Cost</p>
             <p className="text-sm font-bold text-primary font-mono">
               ₹{totalCost.toFixed(2)}
             </p>
           </div>
 
           <div>
-            <p className="text-muted-foreground">Current Meta Balance</p>
-            <p className={`text-sm font-bold font-mono ${currentBalance < totalCost ? 'text-amber-500' : 'text-emerald-500'}`}>
-              {loadingWallet ? '...' : `₹${currentBalance.toFixed(2)}`}
+            <p className="text-muted-foreground">Payment Method</p>
+            <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+              Meta Prepaid / Card
             </p>
           </div>
         </div>
 
-        {/* Notice: Billed directly by Meta with dynamic balance check */}
-        {currentBalance < totalCost ? (
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="size-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
-              <div>
-                <p className="font-semibold text-foreground">
-                  Low Meta Balance: ₹{currentBalance.toFixed(2)} available vs ~₹{totalCost.toFixed(2)} required
-                </p>
-                <p className="text-muted-foreground mt-0.5">
-                  This campaign requires ~₹{totalCost.toFixed(2)}, which exceeds your current Meta balance of ₹{currentBalance.toFixed(2)}. Please add at least <strong>₹{deficit.toFixed(2)}</strong> in your Meta Business Account before sending to prevent delivery errors.
-                </p>
-              </div>
+        {/* Notice: Billed directly by Meta */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-foreground">
+          <div className="flex items-start gap-2">
+            <CheckCircle2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+            <div>
+              <p className="font-semibold text-foreground">
+                Estimated Meta Charges: ~₹{totalCost.toFixed(2)}
+              </p>
+              <p className="text-muted-foreground mt-0.5">
+                WhatsApp charges are billed directly by <strong>Meta</strong> from your Meta Business Manager prepaid balance or linked payment method. Please ensure your Meta balance has at least <strong>₹{totalCost.toFixed(2)}</strong> before dispatching.
+              </p>
             </div>
-            <a
-              href={metaBillingUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-medium px-3 py-1.5 text-xs shrink-0 whitespace-nowrap shadow-sm transition-colors"
-            >
-              Add Funds in Meta <ArrowUpRight className="size-3.5" />
-            </a>
           </div>
-        ) : (
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-900 dark:text-emerald-200">
-            <div className="flex items-start gap-2">
-              <CheckCircle2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
-              <div>
-                <p className="font-semibold text-foreground">
-                  Sufficient Meta Balance: ₹{currentBalance.toFixed(2)} available
-                </p>
-                <p className="text-muted-foreground mt-0.5">
-                  Your current Meta balance covers the estimated ~₹{totalCost.toFixed(2)} Meta charge. Projected balance after sending: ~₹{(currentBalance - totalCost).toFixed(2)}.
-                </p>
-              </div>
-            </div>
-            <a
-              href={metaBillingUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-md border border-emerald-600/30 bg-emerald-600/10 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600/20 font-medium px-3 py-1.5 text-xs shrink-0 whitespace-nowrap transition-colors"
-            >
-              Meta Billing Hub <ArrowUpRight className="size-3.5" />
-            </a>
-          </div>
-        )}
+          <a
+            href={metaBillingUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-3 py-1.5 text-xs shrink-0 whitespace-nowrap shadow-sm transition-colors"
+          >
+            Check Balance in Meta Hub <ArrowUpRight className="size-3.5" />
+          </a>
+        </div>
       </div>
 
       {/* Dispatch Timing: Send Now vs Schedule for Event */}

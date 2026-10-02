@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import {
   Wallet,
-  AlertTriangle,
   CheckCircle2,
   ArrowUpRight,
   Loader2,
@@ -66,8 +65,6 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
 
   const metaBillingUrl =
     metaBilling?.whatsappManagerUrl || "https://business.facebook.com/billing_hub";
-  const currentBalance = metaBilling?.currentBalance ?? 82.43;
-  const isLowBalance = currentBalance < 100;
 
   return (
     <div className="rounded-2xl border border-border/80 bg-gradient-to-br from-card via-card/90 to-background p-5 shadow-sm space-y-4">
@@ -138,32 +135,30 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
         </div>
       </div>
 
-      {/* Notice Banner: Low Fund / Meta Account Guidance */}
-      <div className={`rounded-xl border p-3.5 text-xs ${loading ? "border-border bg-muted/30 text-muted-foreground" : isLowBalance ? "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"}`}>
+      {/* Notice Banner: Meta Account Guidance */}
+      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs text-emerald-900 dark:text-emerald-200">
         <div className="flex items-start gap-2.5">
           {loading ? (
             <Loader2 className="h-4 w-4 shrink-0 text-muted-foreground animate-spin mt-0.5" />
           ) : (
-            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+            <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
           )}
           <div className="space-y-1">
             <p className="font-semibold text-foreground">
-              {loading ? (
-                "Loading Meta WhatsApp Billing & Balance..."
-              ) : isLowBalance ? (
-                `⚠️ Low Balance Alert: Current Meta Balance is ₹${currentBalance.toFixed(2)}`
-              ) : (
-                `Meta WhatsApp Billing Active (Balance: ₹${currentBalance.toFixed(2)})`
-              )}
+              {loading
+                ? "Connecting to Meta WhatsApp Billing..."
+                : "Meta WhatsApp Cloud Billing Active"}
             </p>
             <p className="text-muted-foreground leading-relaxed">
-              {loading ? (
-                "Fetching live account data and usage analytics from Meta Graph API..."
-              ) : (
-                <>
-                  WhatsApp messaging charges are billed directly by <strong>Meta</strong> from your Meta Business Account prepaid balance. If your balance is low or runs out, broadcasts will fail with payment errors (such as <code>131056</code> / <code>131042</code>). Please <strong>go to your Meta Business Manager to add funds</strong> whenever balance is low.
-                </>
-              )}
+              WhatsApp messaging charges are billed directly by <strong>Meta</strong> from your Meta Business prepaid balance or linked payment method. To view your real-time balance or top up funds, please visit the official{" "}
+              <a
+                href={metaBillingUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary font-medium hover:underline inline-flex items-center gap-0.5"
+              >
+                Meta Billing Hub <ExternalLink className="h-2.5 w-2.5" />
+              </a>.
             </p>
           </div>
         </div>
@@ -171,34 +166,31 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
 
       {/* Live Meta Account Stats Cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {/* Current Balance */}
+        {/* Payment Account */}
         <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-1 relative">
           <div className="flex items-center justify-between text-muted-foreground text-xs">
-            <span className="font-medium text-foreground">Current Balance</span>
+            <span className="font-medium text-foreground">Payment Method</span>
             <button
               type="button"
               onClick={() => loadBilling(true)}
               disabled={refreshing || loading}
               className="text-primary hover:text-primary/80 inline-flex items-center gap-1 text-[11px] font-medium transition-colors"
-              title="Refresh live Meta data"
+              title="Refresh live Meta analytics"
             >
               <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} /> Refresh
             </button>
           </div>
-          <div className="text-2xl font-extrabold text-primary">
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-            ) : (
-              `₹${currentBalance.toFixed(2)}`
-            )}
+          <div className="text-lg font-extrabold text-primary flex items-center gap-1.5 pt-0.5">
+            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+            Meta Prepaid
           </div>
           <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-0.5">
-            <span>Remaining in Meta</span>
+            <span>Live Balance:</span>
             <a
               href={metaBillingUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-primary hover:underline inline-flex items-center gap-0.5"
+              className="text-primary font-medium hover:underline inline-flex items-center gap-0.5"
             >
               Meta Hub <ExternalLink className="h-2.5 w-2.5" />
             </a>
