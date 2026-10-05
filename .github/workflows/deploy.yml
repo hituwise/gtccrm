@@ -29,9 +29,9 @@ jobs:
 
       - name: Deploy to Vercel
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN || secrets.VERCEL_AUTH_TOKEN || secrets.VERCEL || secrets.TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID || secrets.ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || secrets.PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN || vars.VERCEL_TOKEN || secrets.VERCEL_AUTH_TOKEN || vars.VERCEL_AUTH_TOKEN || secrets.VERCEL || vars.VERCEL || secrets.TOKEN || vars.TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID || vars.VERCEL_ORG_ID || secrets.ORG_ID || vars.ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || vars.VERCEL_PROJECT_ID || secrets.PROJECT_ID || vars.PROJECT_ID }}
         run: |
           if [ -z "$VERCEL_TOKEN" ]; then
             echo "::error::VERCEL_TOKEN secret is missing! Add VERCEL_TOKEN in GitHub -> Settings -> Secrets and variables -> Actions."
