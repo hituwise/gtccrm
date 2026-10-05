@@ -147,7 +147,7 @@ export function PushNotificationBanner() {
               </h4>
               <p className="text-xs text-muted-foreground leading-relaxed max-w-xl">
                 {isIosNonPwa
-                  ? "Apple requires adding WACRM to your Home Screen to receive instant push alerts when new leads message you."
+                  ? "Apple requires adding LeadPilot to your Home Screen to receive instant push alerts when new leads message you."
                   : "Receive instant notifications on your phone lock screen whenever a customer sends a message."}
               </p>
             </div>
@@ -240,7 +240,7 @@ export function PushNotificationBanner() {
               </div>
               <div className="space-y-0.5">
                 <p className="font-medium text-foreground flex items-center gap-1.5">
-                  Open WACRM from your Home Screen <CheckCircle2 className="size-4 text-green-500" />
+                  Open LeadPilot from your Home Screen <CheckCircle2 className="size-4 text-green-500" />
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Launch the new app icon from your iPhone home screen and tap &quot;Turn On Notifications&quot; when prompted.

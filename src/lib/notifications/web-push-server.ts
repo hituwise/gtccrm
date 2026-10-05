@@ -153,7 +153,7 @@ export async function sendTestPushNotification(
   }
 
   const result = await sendToSubscriptions(db, subscriptions, {
-    title: '🔔 WACRM Notification Test',
+    title: '🔔 LeadPilot Notification Test',
     body: 'Success! Mobile & Desktop Push notifications are working perfectly on this device.',
     conversationId: 'test',
   });

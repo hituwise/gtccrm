@@ -15,7 +15,9 @@
     "createAccount": "Create account"
   },
   "Sidebar": {
-    "title": "CRM Template for WhatsApp",
+    "title": "LeadPilot",
+    "tagline": "The Lead-to-Booking System for Coaches, Consultants & Trainers",
+    "shortTagline": "Lead-to-Booking System",
     "primaryNav": "Primary",
     "dashboard": "Dashboard",
     "inbox": "Inbox",
@@ -1916,7 +1918,7 @@
     "titleJoin": "Create account & join",
     "title": "Create account",
     "descJoin": "Verify your email, then accept the invitation to join your team.",
-    "desc": "Get started with CRM Template for WhatsApp",
+    "desc": "Get started with LeadPilot — The Lead-to-Booking System for Coaches, Consultants & Trainers",
     "fullNameLabel": "Full name",
     "fullNamePlaceholder": "John Doe",
     "emailLabel": "Email",

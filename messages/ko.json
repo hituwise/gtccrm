@@ -15,7 +15,9 @@
     "createAccount": "계정 만들기"
   },
   "Sidebar": {
-    "title": "WhatsApp용 CRM 템플릿",
+    "title": "LeadPilot",
+    "tagline": "코치, 컨설턴트 및 트레이너를 위한 리드-예약 시스템",
+    "shortTagline": "리드-예약 시스템",
     "primaryNav": "기본 메뉴",
     "dashboard": "대시보드",
     "inbox": "인박스",
@@ -1916,7 +1918,7 @@
     "titleJoin": "계정 만들고 참여하기",
     "title": "계정 만들기",
     "descJoin": "이메일을 인증한 뒤 초대를 수락해 팀에 참여하세요.",
-    "desc": "WhatsApp용 CRM Template을 시작하세요",
+    "desc": "LeadPilot 시작하기 — 코치, 컨설턴트 및 트레이너를 위한 리드-예약 시스템",
     "fullNameLabel": "이름",
     "fullNamePlaceholder": "홍길동",
     "emailLabel": "이메일",

@@ -446,7 +446,7 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
                     )}
                   </p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Install WACRM on your Android or iPhone for full-screen view and background push notifications when leads message:
+                    Install LeadPilot on your Android or iPhone for full-screen view and background push notifications when leads message:
                   </p>
                   <ul className="text-xs text-muted-foreground list-disc list-inside space-y-0.5 pt-1">
                     <li>

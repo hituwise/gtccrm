@@ -3,9 +3,9 @@ import type { MetadataRoute } from 'next';
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: '/inbox',
-    name: 'WACRM — WhatsApp CRM',
-    short_name: 'WACRM',
-    description: 'Shared inbox, WhatsApp automation, broadcasts, and AI agent for lead management.',
+    name: 'LeadPilot — The Lead-to-Booking System',
+    short_name: 'LeadPilot',
+    description: 'The Lead-to-Booking System for Coaches, Consultants & Trainers.',
     start_url: '/inbox',
     scope: '/',
     display: 'standalone',

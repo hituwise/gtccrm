@@ -22,10 +22,10 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: {
-    default: "wacrm",
-    template: "%s — wacrm",
+    default: "LeadPilot — The Lead-to-Booking System",
+    template: "%s — LeadPilot",
   },
-  description: "Self-hostable CRM template for WhatsApp.",
+  description: "LeadPilot — The Lead-to-Booking System for Coaches, Consultants & Trainers.",
   robots: {
     index: false,
     follow: false,
@@ -44,7 +44,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "WACRM",
+    title: "LeadPilot",
   },
   formatDetection: {
     email: false,
