@@ -423,6 +423,8 @@ export interface MetaBillingDetails {
   status?: string;
   businessVerificationStatus?: string;
   qualityRating?: string;
+  messagingLimitTier?: string;
+  messagingLimitMax?: number | null;
   billingHubUrl: string;
   whatsappManagerUrl: string;
   currentBalance: number;

@@ -81,11 +81,13 @@ export async function getMetaBillingDetails(
 
     const wabaJson = wabaRes && wabaRes.ok ? await wabaRes.json().catch(() => ({})) : {};
 
-    // 2. Fetch Phone quality rating if available
+    // 2. Fetch Phone quality rating and messaging limit tier if available
     let qualityRating = 'GREEN';
+    let messagingLimitTier: string | undefined;
+    let messagingLimitMax: number | null | undefined;
     if (phoneNumberId) {
       const phoneRes = await fetch(
-        `https://graph.facebook.com/v21.0/${phoneNumberId}?fields=quality_rating,verified_name`,
+        `https://graph.facebook.com/v21.0/${phoneNumberId}?fields=quality_rating,verified_name,messaging_limit_tier`,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
@@ -93,6 +95,18 @@ export async function getMetaBillingDetails(
       if (phoneRes && phoneRes.ok) {
         const phoneJson = await phoneRes.json().catch(() => ({}));
         if (phoneJson.quality_rating) qualityRating = phoneJson.quality_rating;
+        if (phoneJson.messaging_limit_tier) {
+          messagingLimitTier = phoneJson.messaging_limit_tier;
+          const tierMap: Record<string, number | null> = {
+            TIER_50: 50,
+            TIER_250: 250,
+            TIER_1K: 1000,
+            TIER_10K: 10000,
+            TIER_100K: 100000,
+            TIER_UNLIMITED: null,
+          };
+          messagingLimitMax = tierMap[phoneJson.messaging_limit_tier] ?? null;
+        }
       }
     }
 
@@ -149,6 +163,8 @@ export async function getMetaBillingDetails(
       status: wabaJson.status || 'ACTIVE',
       businessVerificationStatus: wabaJson.business_verification_status || 'verified',
       qualityRating,
+      messagingLimitTier,
+      messagingLimitMax,
       billingHubUrl: 'https://business.facebook.com/billing_hub',
       whatsappManagerUrl: `https://business.facebook.com/wa/manage/home/?waba_id=${wabaId}`,
       currentBalance,

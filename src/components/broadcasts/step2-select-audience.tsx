@@ -155,26 +155,45 @@ export function Step2SelectAudience({
         audience.tagIds &&
         audience.tagIds.length > 0
       ) {
-        const { data } = await supabase
-          .from('contact_tags')
-          .select('contact_id')
-          .in('tag_id', audience.tagIds);
-        baseIds = new Set((data ?? []).map((r) => r.contact_id));
+        const tagContactIds: string[] = [];
+        let from = 0;
+        const PAGE_SIZE = 1000;
+        while (true) {
+          const { data } = await supabase
+            .from('contact_tags')
+            .select('contact_id')
+            .in('tag_id', audience.tagIds)
+            .range(from, from + PAGE_SIZE - 1);
+          if (!data || data.length === 0) break;
+          for (const r of data) tagContactIds.push(r.contact_id);
+          if (data.length < PAGE_SIZE) break;
+          from += PAGE_SIZE;
+        }
+        baseIds = new Set(tagContactIds);
       } else if (
         audience.type === 'custom_field' &&
         audience.customField?.fieldId &&
         audience.customField.value
       ) {
         const { fieldId, operator, value } = audience.customField;
-        let q = supabase
-          .from('contact_custom_values')
-          .select('contact_id')
-          .eq('custom_field_id', fieldId);
-        if (operator === 'is') q = q.eq('value', value);
-        else if (operator === 'is_not') q = q.neq('value', value);
-        else q = q.ilike('value', `%${value}%`);
-        const { data } = await q;
-        baseIds = new Set((data ?? []).map((r) => r.contact_id));
+        const fieldContactIds: string[] = [];
+        let from = 0;
+        const PAGE_SIZE = 1000;
+        while (true) {
+          let q = supabase
+            .from('contact_custom_values')
+            .select('contact_id')
+            .eq('custom_field_id', fieldId);
+          if (operator === 'is') q = q.eq('value', value);
+          else if (operator === 'is_not') q = q.neq('value', value);
+          else q = q.ilike('value', `%${value}%`);
+          const { data } = await q.range(from, from + PAGE_SIZE - 1);
+          if (!data || data.length === 0) break;
+          for (const r of data) fieldContactIds.push(r.contact_id);
+          if (data.length < PAGE_SIZE) break;
+          from += PAGE_SIZE;
+        }
+        baseIds = new Set(fieldContactIds);
       } else if (
         audience.type === 'csv' &&
         audience.csvContacts &&
@@ -191,11 +210,21 @@ export function Step2SelectAudience({
       // Apply exclude tags
       let excludeSet: Set<string> | null = null;
       if (audience.excludeTagIds && audience.excludeTagIds.length > 0) {
-        const { data: excludeRows } = await supabase
-          .from('contact_tags')
-          .select('contact_id')
-          .in('tag_id', audience.excludeTagIds);
-        excludeSet = new Set((excludeRows ?? []).map((r) => r.contact_id));
+        const excludeList: string[] = [];
+        let from = 0;
+        const PAGE_SIZE = 1000;
+        while (true) {
+          const { data: excludeRows } = await supabase
+            .from('contact_tags')
+            .select('contact_id')
+            .in('tag_id', audience.excludeTagIds)
+            .range(from, from + PAGE_SIZE - 1);
+          if (!excludeRows || excludeRows.length === 0) break;
+          for (const r of excludeRows) excludeList.push(r.contact_id);
+          if (excludeRows.length < PAGE_SIZE) break;
+          from += PAGE_SIZE;
+        }
+        excludeSet = new Set(excludeList);
       }
 
       if (baseIds) {

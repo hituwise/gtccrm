@@ -1,6 +1,6 @@
 /**
- * CSV parsing for the contacts import modal. Shared + unit-tested so
- * tag-column handling stays aligned with phone/name/email/company.
+ * CSV parsing for the contacts import modal and broadcast wizard.
+ * Shared + unit-tested so phone/name/email/company/tag handling stays aligned.
  */
 
 export interface ParsedContactRow {
@@ -46,9 +46,106 @@ export interface ParseContactCsvResult {
   hasCompanyColumn: boolean;
 }
 
+const PHONE_ALIASES = new Set([
+  'phone',
+  'phonenumber',
+  'phone_number',
+  'mobile',
+  'mobilenumber',
+  'mobile_number',
+  'contact',
+  'contactnumber',
+  'contact_number',
+  'telephone',
+  'whatsapp',
+]);
+
+const NAME_ALIASES = new Set([
+  'name',
+  'fullname',
+  'full_name',
+  'contactname',
+  'contact_name',
+  'firstname',
+  'first_name',
+]);
+
+const EMAIL_ALIASES = new Set([
+  'email',
+  'e_mail',
+  'emailaddress',
+  'email_address',
+]);
+
+const COMPANY_ALIASES = new Set([
+  'company',
+  'companyname',
+  'company_name',
+  'organization',
+  'organisation',
+  'business',
+]);
+
+const TAGS_ALIASES = new Set(['tags', 'tag', 'labels', 'label']);
+
+function normalizeHeaderKey(raw: string): string {
+  return raw
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .toLowerCase()
+    .replace(/["']/g, '')
+    .replace(/[^a-z0-9_]/g, '');
+}
+
+/**
+ * Auto-detect delimiter from the header row. Supports `,`, `;`, and `\t`.
+ * Tries candidates that yield a recognizable `phone` column first,
+ * then falls back to most frequent character.
+ */
+export function detectDelimiter(headerLine: string): string {
+  const candidates = [',', ';', '\t'];
+
+  // 1. Try finding delimiter that exposes a recognizable phone header
+  for (const delim of candidates) {
+    const cols = parseCsvLine(headerLine, delim);
+    const hasPhone = cols.some((col) =>
+      PHONE_ALIASES.has(normalizeHeaderKey(col))
+    );
+    if (hasPhone) {
+      return delim;
+    }
+  }
+
+  // 2. Fallback to frequency count in header line
+  let maxCount = -1;
+  let bestDelim = ',';
+  for (const delim of candidates) {
+    const escaped = delim === '\t' ? '\t' : `\\${delim}`;
+    const count = (headerLine.match(new RegExp(escaped, 'g')) || []).length;
+    if (count > maxCount) {
+      maxCount = count;
+      bestDelim = delim;
+    }
+  }
+
+  return bestDelim;
+}
+
 export function parseContactCsv(text: string): ParseContactCsvResult {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) {
+  // Strip BOM if present and normalize all line breaks (\r\n, \n, \r)
+  const cleanText = text.replace(/^\uFEFF/, '');
+  const lines = cleanText.split(/\r\n|\r|\n/);
+
+  // Find the first non-empty line as header row
+  let headerIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim()) {
+      headerIndex = i;
+      break;
+    }
+  }
+
+  if (headerIndex === -1 || headerIndex >= lines.length - 1) {
     return {
       rows: [],
       hasPhoneColumn: false,
@@ -57,11 +154,12 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
     };
   }
 
-  const headers = lines[0]
-    .split(',')
-    .map((h) => h.trim().toLowerCase().replace(/["']/g, ''));
+  const headerLine = lines[headerIndex];
+  const delimiter = detectDelimiter(headerLine);
+  const rawHeaders = parseCsvLine(headerLine, delimiter);
+  const headers = rawHeaders.map(normalizeHeaderKey);
 
-  const phoneIdx = headers.indexOf('phone');
+  const phoneIdx = headers.findIndex((h) => PHONE_ALIASES.has(h));
   if (phoneIdx === -1) {
     return {
       rows: [],
@@ -71,18 +169,18 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
     };
   }
 
-  const nameIdx = headers.indexOf('name');
-  const emailIdx = headers.indexOf('email');
-  const companyIdx = headers.indexOf('company');
-  const tagsIdx = headers.indexOf('tags');
+  const nameIdx = headers.findIndex((h) => NAME_ALIASES.has(h));
+  const emailIdx = headers.findIndex((h) => EMAIL_ALIASES.has(h));
+  const companyIdx = headers.findIndex((h) => COMPANY_ALIASES.has(h));
+  const tagsIdx = headers.findIndex((h) => TAGS_ALIASES.has(h));
 
   const rows: ParsedContactRow[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
+  for (let i = headerIndex + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
 
-    const values = parseCsvLine(line);
+    const values = parseCsvLine(line, delimiter);
     // A row with no usable phone is pushed through rather than dropped
     // here — dedupeByPhone (shared with the webhook/manual-form paths)
     // already treats an empty normalized key as invalid, and counting
@@ -118,16 +216,22 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
   };
 }
 
-/** Simple CSV line parse (handles quoted fields). */
-function parseCsvLine(line: string): string[] {
+/** CSV line parser handling quotes, escaped quotes (""), and custom delimiters. */
+export function parseCsvLine(line: string, delimiter: string = ','): string[] {
   const values: string[] = [];
   let current = '';
   let inQuotes = false;
 
-  for (const char of line) {
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
     if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === delimiter && !inQuotes) {
       values.push(current.trim());
       current = '';
     } else {

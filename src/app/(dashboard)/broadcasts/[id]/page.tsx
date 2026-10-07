@@ -179,14 +179,24 @@ export default function BroadcastDetailPage() {
       if (bcError) throw bcError;
       setBroadcast(bc);
 
-      const { data: recs, error: recsError } = await supabase
-        .from('broadcast_recipients')
-        .select('*, contact:contacts(*)')
-        .eq('broadcast_id', broadcastId)
-        .order('created_at', { ascending: false });
+      const allRecs: BroadcastRecipient[] = [];
+      let from = 0;
+      const PAGE_SIZE = 1000;
+      while (true) {
+        const { data: chunk, error: recsError } = await supabase
+          .from('broadcast_recipients')
+          .select('*, contact:contacts(*)')
+          .eq('broadcast_id', broadcastId)
+          .order('created_at', { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
 
-      if (recsError) throw recsError;
-      setRecipients(recs ?? []);
+        if (recsError) throw recsError;
+        if (!chunk || chunk.length === 0) break;
+        allRecs.push(...chunk);
+        if (chunk.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+      setRecipients(allRecs);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('notFound'));
     } finally {

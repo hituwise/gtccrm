@@ -4,6 +4,7 @@ import {
   createBroadcast,
   finalizeBroadcastStatus,
   BroadcastError,
+  MAX_RECIPIENTS,
 } from './broadcast-core';
 
 // Contact resolution and token decryption are exercised elsewhere — stub
@@ -38,8 +39,8 @@ describe('createBroadcast validation', () => {
     ).rejects.toBeInstanceOf(BroadcastError);
   });
 
-  it('rejects more than 1000 recipients', async () => {
-    const recipients = Array.from({ length: 1001 }, () => ({
+  it('rejects more than MAX_RECIPIENTS recipients', async () => {
+    const recipients = Array.from({ length: MAX_RECIPIENTS + 1 }, () => ({
       to: '+14155550123',
     }));
     await expect(

@@ -506,6 +506,8 @@
       "importBtn": "{count}개 연락처 가져오기",
       "importBtn_plural": "{count}개 연락처 가져오기",
       "toastNoValidRows": "유효한 행을 찾을 수 없습니다. CSV에 \"phone\" 열 헤더가 있는지 확인하세요.",
+      "toastExcelNotSupported": "Excel 파일(.xlsx / .xls)은 CSV로 저장해야 합니다. Excel에서 파일 → 다른 이름으로 저장 → CSV(쉼표로 구분)(*.csv)를 선택하세요.",
+      "toastNoDataRows": "CSV 파일에서 데이터 행을 찾을 수 없습니다.",
       "toastTagsWarning": "연락처는 가져왔지만 일부 태그 지정에 실패했습니다.",
       "toastImported": "연락처 {count}개를 가져왔습니다",
       "toastImported_plural": "연락처 {count}개를 가져왔습니다",

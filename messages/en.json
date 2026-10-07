@@ -506,6 +506,8 @@
       "importBtn": "Import {count} contact",
       "importBtn_plural": "Import {count} contacts",
       "toastNoValidRows": "No valid rows found. Ensure CSV has a \"phone\" column header.",
+      "toastExcelNotSupported": "Excel files (.xlsx / .xls) must be saved as CSV. In Excel, please click File → Save As → CSV (Comma delimited) (*.csv).",
+      "toastNoDataRows": "No data rows found in the CSV file.",
       "toastTagsWarning": "Contacts imported, but some tag assignments failed.",
       "toastImported": "{count} contact imported",
       "toastImported_plural": "{count} contacts imported",

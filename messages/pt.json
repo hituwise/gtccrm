@@ -506,6 +506,8 @@
       "importBtn": "Importar {count} contato",
       "importBtn_plural": "Importar {count} contatos",
       "toastNoValidRows": "Nenhuma linha válida encontrada. Verifique se o CSV tem um cabeçalho de coluna \"phone\".",
+      "toastExcelNotSupported": "Arquivos do Excel (.xlsx / .xls) devem ser salvos como CSV. No Excel, clique em Arquivo → Salvar como → CSV (delimitado por vírgulas) (*.csv).",
+      "toastNoDataRows": "Nenhuma linha de dados encontrada no arquivo CSV.",
       "toastTagsWarning": "Contatos importados, mas algumas atribuições de tag falharam.",
       "toastImported": "{count} contato importado",
       "toastImported_plural": "{count} contatos importados",

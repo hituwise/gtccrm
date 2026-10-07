@@ -165,7 +165,7 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
       </div>
 
       {/* Live Meta Account Stats Cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {/* Payment Account */}
         <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-1 relative">
           <div className="flex items-center justify-between text-muted-foreground text-xs">
@@ -243,6 +243,28 @@ export function BillingWalletCard({ onFundsUpdated }: BillingWalletCardProps = {
             )}
           </div>
           <p className="text-[11px] text-muted-foreground">High account quality</p>
+        </div>
+
+        {/* Meta Daily Limit Tier */}
+        <div className="rounded-xl border border-border bg-card/60 p-3 space-y-1 col-span-2 sm:col-span-1">
+          <div className="flex items-center justify-between text-muted-foreground text-xs">
+            <span>Meta Daily Limit</span>
+            <ShieldCheck className="h-3.5 w-3.5 text-primary" />
+          </div>
+          <div className="text-xl font-bold text-foreground">
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            ) : metaBilling?.messagingLimitMax ? (
+              `${metaBilling.messagingLimitMax.toLocaleString()} / day`
+            ) : metaBilling?.messagingLimitTier === "TIER_UNLIMITED" ? (
+              "Unlimited"
+            ) : (
+              metaBilling?.messagingLimitTier || "1,000 / day"
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            {metaBilling?.messagingLimitTier ? `${metaBilling.messagingLimitTier} tier` : "Standard tier"}
+          </p>
         </div>
       </div>
 

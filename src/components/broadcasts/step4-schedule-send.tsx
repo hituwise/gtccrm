@@ -110,12 +110,21 @@ export function Step4ScheduleSend({
             .select('*', { count: 'exact', head: true });
           setEstimatedReach(count ?? 0);
         } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
-          const { data: contactTags } = await supabase
-            .from('contact_tags')
-            .select('contact_id')
-            .in('tag_id', audience.tagIds);
+          const uniqueIds = new Set<string>();
+          let from = 0;
+          const PAGE_SIZE = 1000;
+          while (true) {
+            const { data: contactTags } = await supabase
+              .from('contact_tags')
+              .select('contact_id')
+              .in('tag_id', audience.tagIds)
+              .range(from, from + PAGE_SIZE - 1);
 
-          const uniqueIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
+            if (!contactTags || contactTags.length === 0) break;
+            for (const ct of contactTags) uniqueIds.add(ct.contact_id);
+            if (contactTags.length < PAGE_SIZE) break;
+            from += PAGE_SIZE;
+          }
           setEstimatedReach(uniqueIds.size);
         } else if (audience.type === 'csv' && audience.csvContacts) {
           setEstimatedReach(audience.csvContacts.length);
@@ -252,6 +261,34 @@ export function Step4ScheduleSend({
             Check Balance in Meta Hub <ArrowUpRight className="size-3.5" />
           </a>
         </div>
+
+        {/* Meta Messaging Tier & Limitation Awareness */}
+        {metaBilling?.messagingLimitTier && (
+          <div
+            className={`rounded-lg border p-3 text-xs ${
+              metaBilling.messagingLimitMax && estimatedReach > metaBilling.messagingLimitMax
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200'
+                : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200'
+            }`}
+          >
+            <div className="flex items-start gap-2">
+              <Users className="size-4 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <p className="font-semibold">
+                  Meta Daily Limit:{' '}
+                  {metaBilling.messagingLimitMax
+                    ? `${metaBilling.messagingLimitMax.toLocaleString()} unique recipients / 24 hrs (${metaBilling.messagingLimitTier})`
+                    : `${metaBilling.messagingLimitTier} (Unlimited)`}
+                </p>
+                <p className="opacity-90 leading-relaxed">
+                  {metaBilling.messagingLimitMax && estimatedReach > metaBilling.messagingLimitMax
+                    ? `Your audience (${estimatedReach.toLocaleString()}) exceeds your current 24-hr Meta tier (${metaBilling.messagingLimitMax.toLocaleString()}). The system will send without any CRM limitation, but Meta may throttle recipients past ${metaBilling.messagingLimitMax.toLocaleString()} until your quality score upgrades your tier.`
+                    : `No CRM limit applied. All ${estimatedReach.toLocaleString()} recipients will be dispatched according to your Meta tier.`}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Dispatch Timing: Send Now vs Schedule for Event */}

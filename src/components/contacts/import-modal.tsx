@@ -167,18 +167,42 @@ export function ImportModal({
     const selected = e.target.files?.[0];
     if (!selected) return;
 
+    const lowerName = selected.name.toLowerCase();
+    if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+      toast.error(t('toastExcelNotSupported'));
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     setFile(selected);
     setResult(null);
 
     const text = await selected.text();
+
+    if (text.startsWith('PK\x03\x04')) {
+      toast.error(t('toastExcelNotSupported'));
+      reset();
+      return;
+    }
+
     const {
       rows,
+      hasPhoneColumn,
       hasTagsColumn: csvHasTags,
       hasCompanyColumn: csvHasCompany,
     } = parseContactCsv(text);
 
-    if (rows.length === 0) {
+    if (!hasPhoneColumn) {
       toast.error(t('toastNoValidRows'));
+      setParsedRows([]);
+      setHasTagsColumn(false);
+      setHasCompanyColumn(false);
+      setTagColorByKey(new Map());
+      return;
+    }
+
+    if (rows.length === 0) {
+      toast.error(t('toastNoDataRows'));
       setParsedRows([]);
       setHasTagsColumn(false);
       setHasCompanyColumn(false);
@@ -427,6 +451,11 @@ export function ImportModal({
     return { unique: names.size, rowsWithTags };
   }, [parsedRows]);
 
+  const hasNumbersWithoutPlus = useMemo(
+    () => parsedRows.some((r) => r.phone && !r.phone.trim().startsWith('+')),
+    [parsedRows]
+  );
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="flex max-h-[min(90vh,720px)] flex-col gap-0 overflow-hidden border-border/80 bg-popover p-0 text-popover-foreground sm:max-w-2xl">
@@ -518,6 +547,20 @@ export function ImportModal({
                   )}
                 </div>
               </div>
+
+              {hasNumbersWithoutPlus && (
+                <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+                  <AlertTriangle className="size-4 shrink-0 text-amber-400 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-semibold text-amber-300">
+                      Phone numbers must include country code starting with &ldquo;+&rdquo; (e.g. +91...)
+                    </p>
+                    <p className="text-amber-200/80 leading-relaxed">
+                      {t('invalidPhoneHint')}
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div className="overflow-hidden rounded-xl border border-border ring-1 ring-border/50">
                 <div className="overflow-x-auto">

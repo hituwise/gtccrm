@@ -164,71 +164,77 @@ export async function POST(request: Request) {
     let sentCount = 0
     let failedCount = 0
 
-    for (const recipient of recipients) {
-      const sanitized = sanitizePhoneForMeta(recipient.phone)
+    const CONCURRENCY = 5
+    for (let i = 0; i < recipients.length; i += CONCURRENCY) {
+      const chunk = recipients.slice(i, i + CONCURRENCY)
+      await Promise.all(
+        chunk.map(async (recipient) => {
+          const sanitized = sanitizePhoneForMeta(recipient.phone)
 
-      if (!isValidE164(sanitized)) {
-        results.push({
-          phone: recipient.phone,
-          status: 'failed',
-          error: 'Invalid phone number format',
-        })
-        failedCount++
-        continue
-      }
-
-      // Retry with phone variants on "not in allowed list" so numbers
-      // that differ only in a trunk-prefix 0 still reach recipients.
-      const variants = phoneVariants(sanitized)
-      let sentMessageId: string | null = null
-      let lastError: string | null = null
-
-      for (const variant of variants) {
-        try {
-          const result = await sendTemplateMessage({
-            phoneNumberId: config.phone_number_id,
-            accessToken,
-            to: variant,
-            templateName: template_name,
-            language: resolvedTemplate.language,
-            template: templateRow ?? undefined,
-            messageParams: recipient.messageParams,
-            params: recipient.params ?? [],
-          })
-          sentMessageId = result.messageId
-          lastError = null
-          break
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : 'Unknown error'
-          if (!isRecipientNotAllowedError(errorMessage)) {
-            lastError = errorMessage
-            break
+          if (!isValidE164(sanitized)) {
+            results.push({
+              phone: recipient.phone,
+              status: 'failed',
+              error: 'Invalid phone number format',
+            })
+            failedCount++
+            return
           }
-          lastError = errorMessage
-          // retry with next variant
-        }
-      }
 
-      if (sentMessageId) {
-        results.push({
-          phone: recipient.phone,
-          status: 'sent',
-          whatsapp_message_id: sentMessageId,
+          // Retry with phone variants on "not in allowed list" so numbers
+          // that differ only in a trunk-prefix 0 still reach recipients.
+          const variants = phoneVariants(sanitized)
+          let sentMessageId: string | null = null
+          let lastError: string | null = null
+
+          for (const variant of variants) {
+            try {
+              const result = await sendTemplateMessage({
+                phoneNumberId: config.phone_number_id,
+                accessToken,
+                to: variant,
+                templateName: template_name,
+                language: resolvedTemplate.language,
+                template: templateRow ?? undefined,
+                messageParams: recipient.messageParams,
+                params: recipient.params ?? [],
+              })
+              sentMessageId = result.messageId
+              lastError = null
+              break
+            } catch (error) {
+              const errorMessage =
+                error instanceof Error ? error.message : 'Unknown error'
+              if (!isRecipientNotAllowedError(errorMessage)) {
+                lastError = errorMessage
+                break
+              }
+              lastError = errorMessage
+              // retry with next variant
+            }
+          }
+
+          if (sentMessageId) {
+            results.push({
+              phone: recipient.phone,
+              status: 'sent',
+              whatsapp_message_id: sentMessageId,
+            })
+            sentCount++
+          } else {
+            console.error(
+              `Failed to send broadcast to ${recipient.phone}:`,
+              lastError
+            )
+            results.push({
+              phone: recipient.phone,
+              status: 'failed',
+              error: lastError || 'Unknown error',
+            })
+            failedCount++
+          }
         })
-        sentCount++
-      } else {
-        console.error(
-          `Failed to send broadcast to ${recipient.phone}:`,
-          lastError
-        )
-        results.push({
-          phone: recipient.phone,
-          status: 'failed',
-          error: lastError || 'Unknown error',
-        })
-        failedCount++
-      }
+      )
     }
 
     return NextResponse.json({
