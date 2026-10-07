@@ -8,7 +8,7 @@ import {
   batchRetryDelayMs,
 } from '@/lib/broadcast-retry';
 import { normalizeKey } from '@/lib/contacts/dedupe';
-import { Contact, MessageTemplate } from '@/types';
+import { Contact, MessageTemplate, BroadcastRecipient } from '@/types';
 
 export type CustomFieldOperator = 'is' | 'is_not' | 'contains';
 
@@ -525,7 +525,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
 
       // ── Step 4: Fetch recipients back (joined contact) ────────────
       setProgress(30);
-      const allRecipients: any[] = [];
+      type RecipientWithContact = BroadcastRecipient & {
+        contact: Contact | null;
+      };
+      const allRecipients: RecipientWithContact[] = [];
       let fromRec = 0;
       while (true) {
         const { data: chunk, error: recipientsFetchError } = await supabase
@@ -539,7 +542,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
           throw new Error(`Failed to fetch broadcast recipients: ${recipientsFetchError.message}`);
         }
         if (!chunk || chunk.length === 0) break;
-        allRecipients.push(...chunk);
+        allRecipients.push(...(chunk as RecipientWithContact[]));
         if (chunk.length < POSTGREST_PAGE_SIZE) break;
         fromRec += POSTGREST_PAGE_SIZE;
       }
