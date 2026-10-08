@@ -18,8 +18,13 @@ import {
   Search,
   Loader2,
   Radio,
+  Calendar as CalendarIcon,
+  Video,
+  ExternalLink,
+  Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Popover,
@@ -31,6 +36,8 @@ import { useTranslations } from "next-intl";
 import { contactHandle } from "@/lib/whatsapp/wa-identity";
 import { addContactTag, deleteContactTag } from "@/lib/contacts/tag-api";
 import { toast } from "sonner";
+import { BookMeetingDialog } from "./book-meeting-dialog";
+import type { CalendarBooking } from "@/types/calendar";
 
 const PRESET_COLORS = [
   "#ef4444",
@@ -45,6 +52,7 @@ const PRESET_COLORS = [
 
 interface ContactSidebarProps {
   contact: Contact | null;
+  conversationId?: string;
   onTagsChange?: (tags: Tag[]) => void;
 }
 
@@ -63,7 +71,11 @@ interface ContactBroadcast {
   } | null;
 }
 
-export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
+export function ContactSidebar({
+  contact,
+  conversationId,
+  onTagsChange,
+}: ContactSidebarProps) {
   const tSidebar = useTranslations("Inbox.sidebar");
   const tThread = useTranslations("Inbox.messageThread");
 
@@ -81,14 +93,16 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
   const [creatingTag, setCreatingTag] = useState(false);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
+  const [bookings, setBookings] = useState<CalendarBooking[]>([]);
+  const [bookMeetingOpen, setBookMeetingOpen] = useState(false);
 
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
 
     const supabase = createClient();
 
-    // Fetch deals, notes, tags, and broadcast campaigns in parallel
-    const [dealsRes, notesRes, tagsRes, broadcastsRes] = await Promise.all([
+    // Fetch deals, notes, tags, broadcast campaigns, and calendar bookings in parallel
+    const [dealsRes, notesRes, tagsRes, broadcastsRes, bookingsRes] = await Promise.all([
       supabase
         .from("deals")
         .select("*, stage:pipeline_stages(*)")
@@ -118,12 +132,21 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
         .eq("contact_id", contact.id)
         .order("created_at", { ascending: false })
         .limit(10),
+      supabase
+        .from("calendar_bookings")
+        .select("*")
+        .eq("contact_id", contact.id)
+        .order("start_time", { ascending: false })
+        .limit(5),
     ]);
 
     if (dealsRes.data) setDeals(dealsRes.data);
     if (notesRes.data) setNotes(notesRes.data);
     if (broadcastsRes.data) {
       setBroadcasts(broadcastsRes.data as unknown as ContactBroadcast[]);
+    }
+    if (bookingsRes?.data) {
+      setBookings(bookingsRes.data as CalendarBooking[]);
     }
     if (tagsRes.data) {
       const mapped = tagsRes.data
@@ -374,6 +397,31 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
                 <span className="truncate">{contact.email}</span>
               </div>
             )}
+
+            {/* Lead Temperature & Score */}
+            {(contact.lead_temperature || (contact.lead_score !== undefined && contact.lead_score > 0)) && (
+              <div className="flex items-center gap-2 px-3 py-1.5 flex-wrap">
+                {contact.lead_temperature && (
+                  <Badge
+                    variant="outline"
+                    className={`capitalize text-xs font-semibold ${
+                      contact.lead_temperature === 'hot'
+                        ? 'border-red-300 bg-red-50 text-red-700'
+                        : contact.lead_temperature === 'warm'
+                        ? 'border-amber-300 bg-amber-50 text-amber-700'
+                        : 'border-slate-300 bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    {contact.lead_temperature === 'hot' ? '🔥 Hot' : contact.lead_temperature === 'warm' ? '⚡ Warm' : '❄️ Cold'} Lead
+                  </Badge>
+                )}
+                {contact.lead_score !== undefined && (
+                  <Badge variant="secondary" className="text-xs font-mono">
+                    Score: {contact.lead_score}/100
+                  </Badge>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Divider */}
@@ -589,6 +637,97 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
           {/* Divider */}
           <div className="my-4 border-t border-border" />
 
+          {/* Google Calendar & Booked Calls */}
+          <div>
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                <CalendarIcon className="h-3 w-3" />
+                Booked Calls &amp; Demos
+              </div>
+              <button
+                type="button"
+                onClick={() => setBookMeetingOpen(true)}
+                className="flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Book Demo / Call"
+                title="Book Demo / Call"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="mt-2 space-y-2">
+              {bookings.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border/80 p-2.5 text-center">
+                  <p className="text-xs text-muted-foreground">No calls booked yet</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setBookMeetingOpen(true)}
+                    className="mt-2 h-7 w-full gap-1.5 text-xs text-primary"
+                  >
+                    <CalendarIcon className="h-3.5 w-3.5" />
+                    Schedule Demo / Call
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  {bookings.map((booking) => (
+                    <div
+                      key={booking.id}
+                      className="rounded-lg border border-border/60 bg-muted/40 p-2.5 text-xs space-y-1.5"
+                    >
+                      <div className="flex items-start justify-between gap-1">
+                        <span className="font-semibold text-foreground truncate">
+                          {booking.title}
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded px-1.5 py-0.5 text-[10px] font-medium shrink-0",
+                            booking.status === "confirmed"
+                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : "bg-muted text-muted-foreground"
+                          )}
+                        >
+                          {booking.status}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-muted-foreground text-[11px]">
+                        <Clock className="h-3 w-3 shrink-0" />
+                        <span>
+                          {format(new Date(booking.start_time), "EEE, MMM d @ h:mm a")}
+                        </span>
+                      </div>
+                      {booking.meet_link && booking.meet_link.startsWith("http") && (
+                        <a
+                          href={booking.meet_link}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline pt-0.5"
+                        >
+                          <Video className="h-3 w-3" />
+                          Join Google Meet
+                          <ExternalLink className="h-2.5 w-2.5" />
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setBookMeetingOpen(true)}
+                    className="h-7 w-full text-xs text-primary"
+                  >
+                    + Book Another Call
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="my-4 border-t border-border" />
+
           {/* Notes */}
           <div>
             <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -683,6 +822,16 @@ export function ContactSidebar({ contact, onTagsChange }: ContactSidebarProps) {
           </div>
         </div>
       </ScrollArea>
+
+      <BookMeetingDialog
+        open={bookMeetingOpen}
+        onOpenChange={setBookMeetingOpen}
+        contact={contact}
+        conversationId={conversationId}
+        onBookingCreated={(newBooking) => {
+          setBookings((prev) => [newBooking, ...prev]);
+        }}
+      />
     </div>
   );
 }

@@ -30,7 +30,7 @@ export async function GET() {
       // `api_key` is selected only to derive `has_key` — it is stripped
       // out below and never returned to the client.
       .select(
-        'provider, model, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, api_key, embeddings_api_key',
+        'provider, model, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, api_key, embeddings_api_key, action_system_enabled, product_configs, scoring_rules, routing_rules',
       )
       .eq('account_id', accountId)
       .maybeSingle()
@@ -205,6 +205,18 @@ export async function POST(request: Request) {
       is_active: isActive,
       auto_reply_enabled: autoReplyEnabled,
       auto_reply_max_per_conversation: maxPer,
+    }
+    if ('action_system_enabled' in body) {
+      shared.action_system_enabled = body.action_system_enabled === true
+    }
+    if ('product_configs' in body) {
+      shared.product_configs = body.product_configs
+    }
+    if ('scoring_rules' in body) {
+      shared.scoring_rules = body.scoring_rules
+    }
+    if ('routing_rules' in body) {
+      shared.routing_rules = body.routing_rules
     }
     // Only touch the handoff target when the form actually sent the field,
     // so a partial save (e.g. flipping a toggle) doesn't wipe it.

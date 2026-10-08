@@ -124,6 +124,11 @@ export interface Contact {
   /** Hydrated by queries that embed `contact_tags(tags(*))` (e.g. the
    *  Inbox conversation list, for tag filtering). Absent otherwise. */
   tags?: Tag[];
+  /** Lead score calculated by AI Agent Action System (0-100) */
+  lead_score?: number;
+  /** Lead temperature classified by AI Agent Action System (cold, warm, hot) */
+  lead_temperature?: 'cold' | 'warm' | 'hot' | null;
+  lead_score_events?: string[];
 }
 
 export interface Tag {
@@ -759,3 +764,8 @@ export interface QuickReply {
   created_at: string;
   updated_at: string;
 }
+
+// ============================================================
+// Google Calendar & Bookings (migration 045)
+// ============================================================
+export * from './calendar';

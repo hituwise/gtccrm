@@ -174,6 +174,11 @@ export function SettingsOverview({
       ),
     },
     {
+      section: 'calendar',
+      loading: false,
+      subtitle: 'Google Calendar & Meet Demo Booking',
+    },
+    {
       section: 'members',
       loading: countsLoading,
       subtitle:

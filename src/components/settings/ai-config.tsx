@@ -26,6 +26,12 @@ import {
 } from '@/components/ui/select';
 import { SettingsPanelHead } from './settings-panel-head';
 import { AiKnowledgeCard } from './ai-knowledge';
+import { AiActionSettingsCard } from './ai-action-settings';
+import {
+  DEFAULT_PRODUCT_CONFIGS,
+  type ProductKey,
+  type ProductActionConfig,
+} from '@/lib/ai/actions/types';
 import { AI_PROVIDER_DEFAULT_MODEL } from '@/lib/ai/defaults';
 import type { AiProvider } from '@/lib/ai/types';
 import type { AccountMember } from '@/types';
@@ -74,6 +80,10 @@ export function AiConfig() {
   const [maxPerConversation, setMaxPerConversation] = useState(3);
   // Empty string = leave unassigned (shared queue).
   const [handoffAgentId, setHandoffAgentId] = useState('');
+  const [actionSystemEnabled, setActionSystemEnabled] = useState(true);
+  const [productConfigs, setProductConfigs] = useState<Record<ProductKey, ProductActionConfig>>(
+    DEFAULT_PRODUCT_CONFIGS,
+  );
   const [members, setMembers] = useState<AccountMember[]>([]);
 
   // Guard keyed on the account (not a bare boolean) so an in-place
@@ -106,6 +116,12 @@ export function AiConfig() {
         setHasStoredEmbeddingsKey(Boolean(data.has_embeddings_key));
         setEmbeddingsKey(data.has_embeddings_key ? MASKED_KEY : '');
         setEmbeddingsKeyEdited(false);
+        if (data.action_system_enabled !== undefined) {
+          setActionSystemEnabled(Boolean(data.action_system_enabled));
+        }
+        if (data.product_configs) {
+          setProductConfigs({ ...DEFAULT_PRODUCT_CONFIGS, ...data.product_configs });
+        }
       }
     } catch {
       toast.error(t('loadFailed'));
@@ -151,6 +167,8 @@ export function AiConfig() {
     auto_reply_enabled: autoReplyEnabled,
     auto_reply_max_per_conversation: maxPerConversation,
     handoff_agent_id: handoffAgentId || null,
+    action_system_enabled: actionSystemEnabled,
+    product_configs: productConfigs,
   });
 
   const handleTest = async () => {
@@ -485,6 +503,15 @@ export function AiConfig() {
             </div>
           </CardContent>
         </Card>
+
+        <AiActionSettingsCard
+          canEdit={canEdit}
+          actionSystemEnabled={actionSystemEnabled}
+          onToggleActionSystem={setActionSystemEnabled}
+          productConfigs={productConfigs}
+          onChangeProductConfigs={setProductConfigs}
+          members={members}
+        />
 
         <AiKnowledgeCard
           accountId={accountId}

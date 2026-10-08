@@ -679,6 +679,7 @@ function InboxPageInner() {
           <div className="hidden lg:block">
             <ContactSidebar
               contact={activeContact}
+              conversationId={activeConversation?.id}
               onTagsChange={handleContactTagsChange}
             />
           </div>
@@ -700,6 +701,7 @@ function InboxPageInner() {
               </SheetHeader>
               <ContactSidebar
                 contact={activeContact}
+                conversationId={activeConversation?.id}
                 onTagsChange={handleContactTagsChange}
               />
             </SheetContent>

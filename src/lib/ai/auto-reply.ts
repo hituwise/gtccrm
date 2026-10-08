@@ -13,6 +13,18 @@ import {
 } from '@/lib/flows/meta-send'
 import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import {
+  extractEmailFromText,
+  detectBookingIntent,
+  loadCalendarConfig,
+  executeDemoBooking,
+} from '@/lib/calendar/booking-coordinator'
+import {
+  runAiActionPipeline,
+  sanitizeCustomerResponse,
+} from '@/lib/ai/actions/action-runner'
+import { analyzeCustomerIntent } from '@/lib/ai/actions/intent-detector'
+import type { ProductActionConfig, ProductKey } from '@/lib/ai/actions/types'
 
 import { logDecision } from './decision-logger'
 
@@ -134,6 +146,157 @@ export async function dispatchInboundToAiReply(
       return
     }
 
+    // Check for Google Calendar Demo / Call booking intent with email
+    const userMsg = latestUserMessage(messages)
+
+    // Execute the Action System (CRM tagging, scoring, lead routing, milestone notes, calendar availability & booking)
+    if (config.actionSystemEnabled !== false && userMsg) {
+      try {
+        const intents = analyzeCustomerIntent({ currentText: userMsg, messages })
+        const hasActionIntent =
+          intents.products.length > 0 ||
+          intents.isReadyToBook ||
+          intents.hasBothDateAndTime ||
+          intents.isHumanHandoffRequested ||
+          intents.stageTagsToAdd.length > 0 ||
+          intents.signals.length > 0
+
+        if (hasActionIntent) {
+          let contact: { id: string; name?: string | null; phone?: string | null; email?: string | null; lead_score?: number; lead_temperature?: string | null } | null = null
+          try {
+            const { data: cData } = await db
+              .from('contacts')
+              .select('id, name, phone, email, lead_score, lead_temperature')
+              .eq('id', contactId)
+              .maybeSingle()
+            contact = cData
+          } catch {
+            // Continue if contact lookup fails
+          }
+
+          const pipelineResult = await runAiActionPipeline({
+            db,
+            accountId,
+            conversationId,
+            contactId,
+            configOwnerUserId,
+            inboundText: userMsg,
+            messages,
+            aiConfig: config,
+            productConfigs: config.productConfigs as Record<ProductKey, ProductActionConfig> | undefined,
+            contactRecord: contact || undefined,
+          })
+
+          if (pipelineResult.isHandoff) {
+            logDecision('AI_NO_RESPONSE', {
+              conversationId,
+              accountId,
+              reason: 'action_pipeline_handoff',
+            })
+            const update: Record<string, unknown> = {
+              ai_autoreply_disabled: true,
+              ai_handoff_summary: pipelineResult.crmNoteCreated || 'Human handoff requested by customer.',
+            }
+            if (pipelineResult.assignedAgentId) {
+              update.assigned_agent_id = pipelineResult.assignedAgentId
+            } else if (config.handoffAgentId && !conv.assigned_agent_id) {
+              update.assigned_agent_id = config.handoffAgentId
+            }
+            await db.from('conversations').update(update).eq('id', conversationId)
+
+            const { data: claimed } = await db.rpc('claim_ai_reply_slot', {
+              conversation_id: conversationId,
+              max_replies: config.autoReplyMaxPerConversation,
+            })
+            if (claimed === true && pipelineResult.customerResponse) {
+              await engineSendText({
+                accountId,
+                userId: configOwnerUserId,
+                conversationId,
+                contactId,
+                text: pipelineResult.customerResponse,
+                aiGenerated: true,
+              })
+            }
+            return
+          }
+
+          // If action pipeline resolved a specific grounded response (booked appointment, slots offer, product demo offer, etc.)
+          if (
+            pipelineResult.customerResponse &&
+            (pipelineResult.calendarResult || pipelineResult.productKey || pipelineResult.crmNoteCreated)
+          ) {
+            const { data: claimed, error: claimErr } = await db.rpc('claim_ai_reply_slot', {
+              conversation_id: conversationId,
+              max_replies: config.autoReplyMaxPerConversation,
+            })
+            if (claimed === true && !claimErr) {
+              await engineSendText({
+                accountId,
+                userId: configOwnerUserId,
+                conversationId,
+                contactId,
+                text: sanitizeCustomerResponse(pipelineResult.customerResponse),
+                aiGenerated: true,
+              })
+
+              logDecision('AI_RESPONDED', {
+                conversationId,
+                accountId,
+                action: 'action_pipeline_responded',
+                product: pipelineResult.productKey,
+              })
+              return
+            }
+          }
+        }
+      } catch (actionErr) {
+        console.warn('[ai auto-reply] action pipeline non-fatal error, falling back to LLM:', actionErr)
+      }
+    }
+
+    // Fallback: Check for Google Calendar Demo / Call booking intent with email if action pipeline didn't consume
+    const extractedEmail = userMsg ? extractEmailFromText(userMsg) : null
+    if (extractedEmail) {
+      const recentAssistantTexts = messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => m.content)
+      const hasIntent = detectBookingIntent(userMsg, recentAssistantTexts)
+
+      if (hasIntent) {
+        const calConfig = await loadCalendarConfig(db, accountId)
+        if (!calConfig || calConfig.auto_booking_enabled !== false) {
+          const { data: claimed } = await db.rpc('claim_ai_reply_slot', {
+            conversation_id: conversationId,
+            max_replies: config.autoReplyMaxPerConversation,
+          })
+
+          if (claimed === true) {
+            const bookingResult = await executeDemoBooking({
+              db,
+              accountId,
+              contactId,
+              conversationId,
+              configOwnerUserId,
+              email: extractedEmail,
+              preferredTimeText: userMsg,
+              bookedBy: 'ai',
+              sendWhatsAppConfirmation: true,
+            })
+
+            logDecision('AI_RESPONDED', {
+              conversationId,
+              accountId,
+              action: 'calendar_demo_booked',
+              email: extractedEmail,
+              bookingId: bookingResult.booking?.id,
+            })
+            return
+          }
+        }
+      }
+    }
+
     // Show customer "typing…" while generating reply
     if (inboundMessageId) {
       await showTypingIndicator(db, accountId, inboundMessageId)
@@ -228,7 +391,7 @@ export async function dispatchInboundToAiReply(
       userId: configOwnerUserId,
       conversationId,
       contactId,
-      text,
+      text: sanitizeCustomerResponse(text),
       aiGenerated: true,
     })
 

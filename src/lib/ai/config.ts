@@ -12,10 +12,14 @@ interface AiConfigRow {
   auto_reply_max_per_conversation: number
   handoff_agent_id: string | null
   embeddings_api_key: string | null
+  action_system_enabled?: boolean
+  product_configs?: Record<string, unknown> | null
+  scoring_rules?: Record<string, number> | null
+  routing_rules?: Record<string, unknown> | null
 }
 
 const CONFIG_COLUMNS =
-  'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, embeddings_api_key'
+  'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, embeddings_api_key, action_system_enabled, product_configs, scoring_rules, routing_rules'
 
 /**
  * Load and decrypt the account's AI config for *use* (draft or
@@ -79,6 +83,10 @@ export async function loadAiConfig(
     autoReplyMaxPerConversation: row.auto_reply_max_per_conversation,
     handoffAgentId: row.handoff_agent_id,
     embeddingsApiKey,
+    actionSystemEnabled: row.action_system_enabled !== false,
+    productConfigs: (row.product_configs as Record<string, unknown> | null) ?? null,
+    scoringRules: (row.scoring_rules as Record<string, number> | null) ?? null,
+    routingRules: (row.routing_rules as Record<string, unknown> | null) ?? null,
   }
 }
 
