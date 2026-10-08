@@ -146,6 +146,7 @@ export function parseBookingSlot(
   durationMinutes: number = 45,
   referenceDate: Date = new Date(),
   timezone: string = 'Asia/Kolkata',
+  preserveReferenceDayIfUnspecified: boolean = false,
 ): ParsedSlot {
   const tz = timezone || 'Asia/Kolkata';
   const lower = text.toLowerCase().trim();
@@ -307,15 +308,21 @@ export function parseBookingSlot(
     }
   }
 
-  // If day was not explicitly specified, pick next business day
+  // If day was not explicitly specified:
   if (!isExplicitDay) {
-    let d = addDays(new Date(refParts.year, refParts.month - 1, refParts.day), 1);
-    while (isWeekend(d)) {
-      d = addDays(d, 1);
+    if (preserveReferenceDayIfUnspecified) {
+      targetYear = refParts.year;
+      targetMonth = refParts.month;
+      targetDay = refParts.day;
+    } else {
+      let d = addDays(new Date(refParts.year, refParts.month - 1, refParts.day), 1);
+      while (isWeekend(d)) {
+        d = addDays(d, 1);
+      }
+      targetYear = d.getFullYear();
+      targetMonth = d.getMonth() + 1;
+      targetDay = d.getDate();
     }
-    targetYear = d.getFullYear();
-    targetMonth = d.getMonth() + 1;
-    targetDay = d.getDate();
   }
 
   // If time was not explicitly specified, pick default demo slot: 11:00 AM

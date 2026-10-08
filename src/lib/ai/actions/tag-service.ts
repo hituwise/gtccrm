@@ -20,17 +20,18 @@ export async function getOrCreateAccountTag(
   color: string = '#4F46E5',
 ): Promise<string | null> {
   // 1. Try to find existing tag (case-insensitive name match)
-  const { data: existing, error: findErr } = await db
+  const { data: existingList, error: findErr } = await db
     .from('tags')
     .select('id')
     .eq('account_id', accountId)
     .ilike('name', tagName)
-    .maybeSingle();
+    .limit(1);
 
   if (findErr) {
     console.warn('[tag-service] Error finding tag:', findErr.message);
   }
 
+  const existing = existingList?.[0];
   if (existing?.id) {
     return existing.id;
   }

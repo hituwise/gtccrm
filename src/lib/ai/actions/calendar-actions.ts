@@ -62,7 +62,13 @@ export async function executeCheckAvailability(
   const calConfig = await loadCalendarConfig(db, accountId);
   const tz = timezone || calConfig?.default_timezone || 'Asia/Kolkata';
 
-  const slot = parseBookingSlot(preferredTimeText, durationMinutes, referenceDate || new Date(), tz);
+  const slot = parseBookingSlot(
+    preferredTimeText,
+    durationMinutes,
+    referenceDate || new Date(),
+    tz,
+    Boolean(referenceDate),
+  );
 
   // If calendar is not connected or inactive, return unavailable so we don't fake availability
   if (!calConfig?.is_active || (!calConfig.service_account_key && !calConfig.oauth_credentials)) {
@@ -329,6 +335,7 @@ export async function executeRescheduleAppointment(
     customerName,
     timezone,
     childAge,
+    referenceDate,
   } = context;
 
   const resolvedConfig = productConfig || DEFAULT_PRODUCT_CONFIGS[productKey];
@@ -337,7 +344,13 @@ export async function executeRescheduleAppointment(
   const calConfig = await loadCalendarConfig(db, accountId);
   const tz = timezone || calConfig?.default_timezone || 'Asia/Kolkata';
 
-  const slot = parseBookingSlot(preferredTimeText, duration, new Date(), tz);
+  const slot = parseBookingSlot(
+    preferredTimeText,
+    duration,
+    referenceDate || new Date(),
+    tz,
+    Boolean(referenceDate),
+  );
 
   try {
     const res = await rescheduleDemoBooking({

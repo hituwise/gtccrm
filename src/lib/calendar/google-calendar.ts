@@ -28,16 +28,16 @@ export interface GoogleBookingResult {
  * Parses raw or encrypted credentials into an object.
  */
 function parseKeyPayload<T>(rawKey: string): T {
-  let jsonStr = rawKey.trim();
-  // Check if it's in encrypted format (contains colons for IV/ciphertext/tag)
-  if (jsonStr.includes(':')) {
+  let str = rawKey.trim();
+  if (!str.startsWith('{')) {
     try {
-      jsonStr = decrypt(jsonStr);
-    } catch {
-      // If decryption fails, maybe it was raw JSON
+      str = decrypt(str);
+    } catch (err) {
+      console.error('[google-calendar] Decryption error in parseKeyPayload:', err);
+      throw new Error(`Failed to decrypt Google credentials: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return JSON.parse(jsonStr) as T;
+  return JSON.parse(str) as T;
 }
 
 /**
