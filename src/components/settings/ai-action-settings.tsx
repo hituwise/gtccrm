@@ -26,7 +26,7 @@ import {
 } from '@/lib/ai/actions/types';
 import type { AccountMember } from '@/types';
 import { memberLabel } from '@/lib/account/members';
-import { Sparkles, Calendar, Users, ShieldCheck, Tag } from 'lucide-react';
+import { Sparkles, ShieldCheck, Tag } from 'lucide-react';
 
 interface AiActionSettingsProps {
   canEdit: boolean;

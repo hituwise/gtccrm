@@ -1,15 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  analyzeCustomerIntent,
-  detectProductIntent,
-} from './intent-detector';
-import {
   runAiActionPipeline,
   sanitizeCustomerResponse,
 } from './action-runner';
 import { parseBookingSlot, extractChildAge } from '@/lib/calendar/date-parser';
-import { DEFAULT_PRODUCT_CONFIGS } from './types';
 import type { ChatMessage } from '@/lib/ai/types';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 describe('AI Agent Action System', () => {
   // Mock Supabase database client
@@ -28,7 +24,23 @@ describe('AI Agent Action System', () => {
   // Default mock responses
   mockDb.from.mockImplementation((table: string) => {
     function createChain(data: unknown) {
-      const chain: any = {
+      type ChainType = {
+        select: () => ChainType;
+        insert: () => ChainType;
+        update: () => ChainType;
+        delete: () => ChainType;
+        eq: () => ChainType;
+        in: () => ChainType;
+        ilike: () => ChainType;
+        single: () => Promise<{ data: unknown; error: null }>;
+        maybeSingle: () => Promise<{ data: unknown; error: null }>;
+        then: <TResult1 = { data: unknown; error: null }, TResult2 = never>(
+          onfulfilled?: ((value: { data: unknown; error: null }) => TResult1 | PromiseLike<TResult1>) | null,
+          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+        ) => Promise<TResult1 | TResult2>;
+      };
+
+      const chain: ChainType = {
         select: () => chain,
         insert: () => chain,
         update: () => chain,
@@ -38,7 +50,7 @@ describe('AI Agent Action System', () => {
         ilike: () => chain,
         single: () => Promise.resolve({ data, error: null }),
         maybeSingle: () => Promise.resolve({ data, error: null }),
-        then: (resolve: any) => Promise.resolve({ data, error: null }).then(resolve),
+        then: (resolve) => Promise.resolve({ data, error: null }).then(resolve),
       };
       return chain;
     }
@@ -102,7 +114,7 @@ describe('AI Agent Action System', () => {
   it('TEST 1 — Abacus: detects ABACUS_KIDS_INTEREST, INTERESTED, extracts childAge, assigns Kids team', async () => {
     const input = 'I am looking for Abacus classes for my 9-year-old.';
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -133,7 +145,7 @@ describe('AI Agent Action System', () => {
     ];
 
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -163,7 +175,7 @@ describe('AI Agent Action System', () => {
     ];
 
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -196,8 +208,6 @@ describe('AI Agent Action System', () => {
   it('TEST 4 — Unavailable Slot: does NOT add DEMO_BOOKED and returns alternatives', async () => {
     // Override executeCheckAvailability mock by configuring conflict
     const calActions = await import('./calendar-actions');
-    const origCheck = calActions.executeCheckAvailability;
-    const origSlots = calActions.executeGetAvailableSlots;
 
     vi.spyOn(calActions, 'executeCheckAvailability').mockResolvedValueOnce({
       available: false,
@@ -229,7 +239,7 @@ describe('AI Agent Action System', () => {
     ];
 
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -252,7 +262,7 @@ describe('AI Agent Action System', () => {
   it('TEST 5 — MAA: detects MAA_INTEREST, INTERESTED, creates note, assigns MAA team', async () => {
     const input = 'I need an app to manage my Abacus academy fees and students.';
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -276,7 +286,7 @@ describe('AI Agent Action System', () => {
   it('TEST 6 — Lead Pilot: detects LEAD_PILOT_INTEREST, INTERESTED, creates note', async () => {
     const input = 'I want WhatsApp automation for my coaching leads.';
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -300,7 +310,7 @@ describe('AI Agent Action System', () => {
   it('TEST 7 — GTC: detects GTC_INTEREST, INTERESTED, offers training call', async () => {
     const input = 'I want to learn Abacus so I can start teaching.';
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -323,7 +333,7 @@ describe('AI Agent Action System', () => {
   it('TEST 8 — Gold: detects GOLD_INTEREST, assigns Gold team, creates note', async () => {
     const input = 'I already coach 50 students and need more leads and better sales.';
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -346,7 +356,7 @@ describe('AI Agent Action System', () => {
   it('TEST 9 — Payment: detects ENROLLMENT_INTEREST, HOT_LEAD, never adds PURCHASED prematurely', async () => {
     const input = 'I want to pay and join.';
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,
@@ -369,7 +379,7 @@ describe('AI Agent Action System', () => {
   it('TEST 10 — Human: detects HUMAN_HANDOFF, creates note, flags isHandoff: true', async () => {
     const input = 'I want to speak to a person.';
     const res = await runAiActionPipeline({
-      db: mockDb as any,
+      db: mockDb as unknown as SupabaseClient,
       accountId,
       conversationId,
       contactId,

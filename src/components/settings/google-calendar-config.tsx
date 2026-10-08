@@ -7,14 +7,10 @@ import {
   AlertCircle,
   Video,
   Key,
-  Clock,
-  Globe,
-  MessageSquare,
   Sparkles,
   ExternalLink,
   Loader2,
   Trash2,
-  HelpCircle,
   Copy,
   Check,
 } from 'lucide-react';
@@ -83,6 +79,7 @@ export function GoogleCalendarConfig() {
   useEffect(() => {
     loadConfig();
     loadRecentBookings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadConfig() {

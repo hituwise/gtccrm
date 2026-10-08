@@ -6,7 +6,6 @@ import {
   type LeadTemperature,
 } from './types';
 import {
-  parseBookingSlot,
   hasDateSpecified,
   hasTimeSpecified,
   extractChildAge,
@@ -109,7 +108,7 @@ export function analyzeCustomerIntent(args: {
   contactEmail?: string | null;
   referenceDate?: Date;
 }): DetectedIntents {
-  const { currentText, messages, existingTags = [], contactEmail, referenceDate = new Date() } = args;
+  const { currentText, messages, contactEmail } = args;
   const lower = currentText.toLowerCase();
 
   // Combine recent customer texts for context

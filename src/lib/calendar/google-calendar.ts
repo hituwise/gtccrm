@@ -210,7 +210,6 @@ export async function createGoogleCalendarBooking(
   // Extract Google Meet link
   let meetLink = event.hangoutLink || null;
   if (!meetLink && event.conferenceData?.entryPoints) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const videoEntry = event.conferenceData.entryPoints.find(
       (ep: { entryPointType?: string }) => ep.entryPointType === 'video',
     );
@@ -316,7 +315,6 @@ export async function getGoogleCalendarAvailableSlots(
   },
 ): Promise<AvailableSlotResult[]> {
   const { durationMinutes, count = 3 } = args;
-  const tz = args.timezone || config.default_timezone || 'UTC';
   const workStartStr = config.working_hours_start || '09:00';
   const workEndStr = config.working_hours_end || '18:00';
   const buffer = config.buffer_between_meetings ?? 15;
