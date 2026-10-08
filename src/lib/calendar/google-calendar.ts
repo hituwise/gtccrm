@@ -154,7 +154,7 @@ export async function createGoogleCalendarBooking(
 ): Promise<GoogleBookingResult> {
   const calendar = await getGoogleCalendarClient(config);
   const targetCalendarId = config.calendar_id || 'primary';
-  const tz = args.timezone || config.default_timezone || 'UTC';
+  const tz = args.timezone || config.default_timezone || 'Asia/Kolkata';
 
   const requestId = `leadpilot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -195,15 +195,85 @@ export async function createGoogleCalendarBooking(
     },
   };
 
-  const res = await calendar.events.insert({
-    calendarId: targetCalendarId,
-    requestBody: eventPayload,
-    conferenceDataVersion: 1, // Required for generating Google Meet link
-    sendUpdates: 'all',        // Sends Google Calendar invitation to attendees
-  });
+  let event: {
+    id?: string | null;
+    hangoutLink?: string | null;
+    htmlLink?: string | null;
+    start?: { dateTime?: string | null };
+    end?: { dateTime?: string | null };
+    summary?: string | null;
+    conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> };
+  } | undefined;
 
-  const event = res.data;
-  if (!event.id) {
+  try {
+    const res = await calendar.events.insert({
+      calendarId: targetCalendarId,
+      requestBody: eventPayload,
+      conferenceDataVersion: 1, // Required for generating Google Meet link
+      sendUpdates: 'all',        // Sends Google Calendar invitation to attendees
+    });
+    event = res.data;
+  } catch (insertErr: unknown) {
+    const errMessage = insertErr instanceof Error ? insertErr.message : String(insertErr);
+    console.warn('[google-calendar] events.insert initial attempt failed:', errMessage);
+
+    const isConferenceErr =
+      errMessage.includes('conference') ||
+      errMessage.includes('Invalid conference type') ||
+      errMessage.includes('400');
+
+    const isAttendeeOrDomainErr =
+      errMessage.includes('Domain-Wide Delegation') ||
+      errMessage.includes('cannot invite attendees') ||
+      errMessage.includes('attendees') ||
+      errMessage.includes('403');
+
+    try {
+      const sanitizedPayload: Record<string, unknown> = { ...eventPayload };
+      let sendUpdatesOption = 'all';
+
+      if (isConferenceErr || isAttendeeOrDomainErr) {
+        delete sanitizedPayload.conferenceData;
+      }
+      if (isAttendeeOrDomainErr) {
+        delete sanitizedPayload.attendees;
+        sendUpdatesOption = 'none';
+        if (args.attendeeEmail) {
+          sanitizedPayload.description = `${(sanitizedPayload.description as string) || ''}\n\nAttendee: ${args.attendeeName || 'Customer'} (${args.attendeeEmail})`;
+        }
+      }
+
+      console.log('[google-calendar] Retrying event creation with sanitized payload...');
+      const fallbackRes = await calendar.events.insert({
+        calendarId: targetCalendarId,
+        requestBody: sanitizedPayload,
+        conferenceDataVersion: sanitizedPayload.conferenceData ? 1 : undefined,
+        sendUpdates: sendUpdatesOption as 'all' | 'none',
+      });
+      event = fallbackRes.data;
+    } catch (secondErr: unknown) {
+      const secondMsg = secondErr instanceof Error ? secondErr.message : String(secondErr);
+      console.warn('[google-calendar] Second insert attempt failed:', secondMsg);
+
+      console.log('[google-calendar] Retrying event creation with minimal safe payload...');
+      const minimalPayload = {
+        summary: eventPayload.summary,
+        description: `${eventPayload.description || ''}${args.attendeeEmail ? `\n\nAttendee: ${args.attendeeName || 'Customer'} (${args.attendeeEmail})` : ''}`,
+        start: eventPayload.start,
+        end: eventPayload.end,
+        reminders: eventPayload.reminders,
+      };
+
+      const finalRes = await calendar.events.insert({
+        calendarId: targetCalendarId,
+        requestBody: minimalPayload,
+        sendUpdates: 'none',
+      });
+      event = finalRes.data;
+    }
+  }
+
+  if (!event || !event.id) {
     throw new Error('Google Calendar did not return an event ID');
   }
 
@@ -225,6 +295,53 @@ export async function createGoogleCalendarBooking(
     startTime: event.start?.dateTime || args.startTime,
     endTime: event.end?.dateTime || args.endTime,
     title: event.summary || args.title,
+  };
+}
+
+/**
+ * Reschedules / updates an existing event in Google Calendar.
+ */
+export async function updateGoogleCalendarBooking(
+  config: Pick<GoogleCalendarConfig, 'auth_type' | 'service_account_key' | 'oauth_credentials' | 'calendar_id' | 'default_timezone'>,
+  args: {
+    eventId: string;
+    startTime: string; // ISO
+    endTime: string;   // ISO
+    timezone?: string;
+    title?: string;
+    description?: string;
+  },
+): Promise<GoogleBookingResult> {
+  const calendar = await getGoogleCalendarClient(config);
+  const targetCalendarId = config.calendar_id || 'primary';
+  const tz = args.timezone || config.default_timezone || 'Asia/Kolkata';
+
+  const patchBody: Record<string, unknown> = {
+    start: { dateTime: args.startTime, timeZone: tz },
+    end: { dateTime: args.endTime, timeZone: tz },
+  };
+  if (args.title) patchBody.summary = args.title;
+  if (args.description) patchBody.description = args.description;
+
+  const res = await calendar.events.patch({
+    calendarId: targetCalendarId,
+    eventId: args.eventId,
+    requestBody: patchBody,
+    sendUpdates: 'all',
+  });
+
+  const event = res.data;
+  if (!event.id) {
+    throw new Error('Google Calendar did not return an updated event ID');
+  }
+
+  return {
+    eventId: event.id,
+    meetLink: event.hangoutLink || null,
+    htmlLink: event.htmlLink || null,
+    startTime: event.start?.dateTime || args.startTime,
+    endTime: event.end?.dateTime || args.endTime,
+    title: event.summary || args.title || '',
   };
 }
 
@@ -292,6 +409,25 @@ export interface AvailableSlotResult {
   humanText: string;
 }
 
+function getTimezoneOffsetString(date: Date, timeZone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      timeZoneName: 'longOffset',
+    }).formatToParts(date);
+    const tzPart = parts.find((p) => p.type === 'timeZoneName')?.value;
+    if (!tzPart || tzPart === 'GMT') return '+00:00';
+    const match = tzPart.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+    if (!match) return '+00:00';
+    const sign = match[1];
+    const hours = match[2].padStart(2, '0');
+    const minutes = (match[3] || '00').padStart(2, '0');
+    return `${sign}${hours}:${minutes}`;
+  } catch {
+    return '+05:30';
+  }
+}
+
 /**
  * Retrieves actual free slots on a given date during working hours.
  */
@@ -315,20 +451,26 @@ export async function getGoogleCalendarAvailableSlots(
   },
 ): Promise<AvailableSlotResult[]> {
   const { durationMinutes, count = 3 } = args;
+  const tz = args.timezone || config.default_timezone || 'Asia/Kolkata';
   const workStartStr = config.working_hours_start || '09:00';
   const workEndStr = config.working_hours_end || '18:00';
   const buffer = config.buffer_between_meetings ?? 15;
 
   const baseDate = typeof args.targetDate === 'string' ? new Date(args.targetDate) : args.targetDate;
-  const year = baseDate.getFullYear();
-  const month = baseDate.getMonth();
-  const day = baseDate.getDate();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(baseDate);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
+  const y = get('year');
+  const m = get('month');
+  const d = get('day');
+  const offset = getTimezoneOffsetString(baseDate, tz);
 
-  const [startH, startM] = workStartStr.split(':').map((v) => parseInt(v, 10) || 0);
-  const [endH, endM] = workEndStr.split(':').map((v) => parseInt(v, 10) || 0);
-
-  const dayStart = new Date(year, month, day, startH, startM, 0, 0);
-  const dayEnd = new Date(year, month, day, endH, endM, 0, 0);
+  const dayStart = new Date(`${y}-${m}-${d}T${workStartStr.padStart(5, '0')}:00${offset}`);
+  const dayEnd = new Date(`${y}-${m}-${d}T${workEndStr.padStart(5, '0')}:00${offset}`);
 
   let busyIntervals: Array<{ start: number; end: number }> = [];
 
@@ -374,22 +516,22 @@ export async function getGoogleCalendarAvailableSlots(
       const dStart = new Date(candStart);
       const dEnd = new Date(candEnd);
 
-      const humanTime = dStart.toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: dStart.getMinutes() === 0 ? undefined : '2-digit',
-        hour12: true,
-      });
-
-      const humanDate = dStart.toLocaleDateString('en-US', {
+      const humanFormatted = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
         weekday: 'short',
         month: 'short',
         day: 'numeric',
-      });
+        hour: 'numeric',
+        minute: dStart.getMinutes() === 0 ? undefined : '2-digit',
+        hour12: true,
+      }).format(dStart);
+
+      const tzSuffix = tz === 'Asia/Kolkata' ? 'IST' : tz;
 
       results.push({
         startTime: dStart.toISOString(),
         endTime: dEnd.toISOString(),
-        humanText: `${humanDate} at ${humanTime}`,
+        humanText: `${humanFormatted} ${tzSuffix}`,
       });
 
       // Advance by duration + buffer

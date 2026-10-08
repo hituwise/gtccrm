@@ -7,6 +7,34 @@ import { parseBookingSlot, extractChildAge } from '@/lib/calendar/date-parser';
 import type { ChatMessage } from '@/lib/ai/types';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+vi.mock('@/lib/calendar/google-calendar', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/calendar/google-calendar')>();
+  return {
+    ...actual,
+    createGoogleCalendarBooking: vi.fn().mockResolvedValue({
+      eventId: 'g-event-test-123',
+      meetLink: 'https://meet.google.com/abc-defg-hij',
+      htmlLink: 'https://calendar.google.com/event?eid=123',
+      startTime: '2026-10-09T17:00:00+05:30',
+      endTime: '2026-10-09T17:45:00+05:30',
+      title: 'Free Abacus Demo: Rohan Verma',
+    }),
+    updateGoogleCalendarBooking: vi.fn().mockResolvedValue({
+      eventId: 'g-event-test-123',
+      meetLink: 'https://meet.google.com/abc-defg-hij',
+      htmlLink: 'https://calendar.google.com/event?eid=123',
+      startTime: '2026-10-09T17:00:00+05:30',
+      endTime: '2026-10-09T17:45:00+05:30',
+      title: 'Free Abacus Demo: Rescheduled',
+    }),
+    checkGoogleCalendarAvailability: vi.fn().mockResolvedValue({ available: true }),
+    getGoogleCalendarAvailableSlots: vi.fn().mockResolvedValue([
+      { startTime: '2026-10-09T16:00:00+05:30', endTime: '2026-10-09T16:45:00+05:30', humanText: '4:00 PM IST' },
+      { startTime: '2026-10-09T18:00:00+05:30', endTime: '2026-10-09T18:45:00+05:30', humanText: '6:00 PM IST' },
+    ]),
+  };
+});
+
 describe('AI Agent Action System', () => {
   // Mock Supabase database client
   const mockDb = {
@@ -18,92 +46,122 @@ describe('AI Agent Action System', () => {
   const contactId = 'contact-xyz-456';
   const conversationId = 'conv-789';
 
+  let currentActiveBooking: unknown = null;
+
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
+    currentActiveBooking = null;
 
-  // Default mock responses
-  mockDb.from.mockImplementation((table: string) => {
-    function createChain(data: unknown) {
-      type ChainType = {
-        select: () => ChainType;
-        insert: () => ChainType;
-        update: () => ChainType;
-        delete: () => ChainType;
-        eq: () => ChainType;
-        in: () => ChainType;
-        ilike: () => ChainType;
-        single: () => Promise<{ data: unknown; error: null }>;
-        maybeSingle: () => Promise<{ data: unknown; error: null }>;
-        then: <TResult1 = { data: unknown; error: null }, TResult2 = never>(
-          onfulfilled?: ((value: { data: unknown; error: null }) => TResult1 | PromiseLike<TResult1>) | null,
-          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-        ) => Promise<TResult1 | TResult2>;
-      };
+    // Default mock responses
+    mockDb.from.mockImplementation((table: string) => {
+      function createChain(data: unknown) {
+        type ChainType = {
+          select: () => ChainType;
+          insert: () => ChainType;
+          update: () => ChainType;
+          delete: () => ChainType;
+          eq: () => ChainType;
+          in: () => ChainType;
+          ilike: () => ChainType;
+          order: () => ChainType;
+          limit: () => ChainType;
+          single: () => Promise<{ data: unknown; error: null }>;
+          maybeSingle: () => Promise<{ data: unknown; error: null }>;
+          then: <TResult1 = { data: unknown; error: null }, TResult2 = never>(
+            onfulfilled?: ((value: { data: unknown; error: null }) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ) => Promise<TResult1 | TResult2>;
+        };
 
-      const chain: ChainType = {
-        select: () => chain,
-        insert: () => chain,
-        update: () => chain,
-        delete: () => chain,
-        eq: () => chain,
-        in: () => chain,
-        ilike: () => chain,
-        single: () => Promise.resolve({ data, error: null }),
-        maybeSingle: () => Promise.resolve({ data, error: null }),
-        then: (resolve) => Promise.resolve({ data, error: null }).then(resolve),
-      };
-      return chain;
-    }
+        const chain: ChainType = {
+          select: () => chain,
+          insert: () => chain,
+          update: () => chain,
+          delete: () => chain,
+          eq: () => chain,
+          in: () => chain,
+          ilike: () => chain,
+          order: () => chain,
+          limit: () => chain,
+          single: () => Promise.resolve({ data, error: null }),
+          maybeSingle: () => Promise.resolve({ data, error: null }),
+          then: (resolve) => Promise.resolve({ data, error: null }).then(resolve),
+        };
+        return chain;
+      }
 
-    if (table === 'tags') {
-      return createChain({ id: 'tag-123', name: 'TEST_TAG' });
-    }
-    if (table === 'contacts') {
-      return createChain({
-        id: contactId,
-        name: 'Ananya Sharma',
-        email: 'ananya@example.com',
-        phone: '+919876543210',
-        lead_score: 0,
-        lead_temperature: null,
-        lead_score_events: [],
-      });
-    }
-    if (table === 'profiles') {
-      return createChain({
-        id: 'prof-1',
-        full_name: 'Admissions Staff',
-      });
-    }
-    if (table === 'contact_tags') {
-      return createChain({ id: 'ct-1' });
-    }
-    if (table === 'contact_notes') {
-      return createChain({ id: 'note-1' });
-    }
-    if (table === 'conversations') {
-      return createChain({ id: conversationId, assigned_agent_id: null });
-    }
-    if (table === 'ai_action_logs') {
-      return createChain({ id: 'log-1' });
-    }
-    if (table === 'google_calendar_configs') {
-      return createChain({
-        is_active: false,
-        default_timezone: 'Asia/Kolkata',
-        default_meeting_duration: 45,
-      });
-    }
-    if (table === 'calendar_bookings') {
-      return createChain({
-        id: 'booking-unit-1',
-        start_time: new Date().toISOString(),
-        meet_link: 'https://meet.google.com/abc-defg-hij',
-      });
-    }
+      if (table === 'tags') {
+        return createChain({ id: 'tag-123', name: 'TEST_TAG' });
+      }
+      if (table === 'contacts') {
+        return createChain({
+          id: contactId,
+          name: 'Ananya Sharma',
+          email: 'ananya@example.com',
+          phone: '+919876543210',
+          lead_score: 0,
+          lead_temperature: null,
+          lead_score_events: [],
+        });
+      }
+      if (table === 'profiles') {
+        return createChain({
+          id: 'prof-1',
+          full_name: 'Admissions Staff',
+        });
+      }
+      if (table === 'contact_tags') {
+        return createChain({ id: 'ct-1' });
+      }
+      if (table === 'contact_notes') {
+        return createChain({ id: 'note-1' });
+      }
+      if (table === 'conversations') {
+        return createChain({ id: conversationId, assigned_agent_id: null });
+      }
+      if (table === 'ai_action_logs') {
+        return createChain({ id: 'log-1' });
+      }
+      if (table === 'google_calendar_configs') {
+        return createChain({
+          is_active: true,
+          service_account_key: 'test-key',
+          calendar_id: 'primary',
+          default_timezone: 'Asia/Kolkata',
+          default_meeting_duration: 45,
+        });
+      }
+      if (table === 'calendar_bookings') {
+        const defaultCreatedBooking = {
+          id: 'booking-unit-1',
+          google_event_id: 'g-event-test-123',
+          start_time: '2026-10-09T11:30:00.000Z',
+          timezone: 'Asia/Kolkata',
+          meet_link: 'https://meet.google.com/abc-defg-hij',
+          status: 'confirmed',
+        };
+        // For queries looking up active booking, return currentActiveBooking (null by default)
+        // For insert/update, return defaultCreatedBooking
+        const chain: any = {
+          select: () => chain,
+          insert: () => chain,
+          update: () => chain,
+          delete: () => chain,
+          eq: () => chain,
+          in: () => chain,
+          ilike: () => chain,
+          order: () => chain,
+          limit: () => chain,
+          single: () => Promise.resolve({ data: currentActiveBooking || defaultCreatedBooking, error: null }),
+          maybeSingle: () => Promise.resolve({ data: currentActiveBooking, error: null }),
+          then: (resolve: any) => Promise.resolve({ data: currentActiveBooking || defaultCreatedBooking, error: null }).then(resolve),
+        };
+        return chain;
+      }
 
-    return createChain(null);
-  });
+      return createChain(null);
+    });
   });
 
   // ============================================================
@@ -193,7 +251,7 @@ describe('AI Agent Action System', () => {
     expect(res.calendarResult?.booked).toBe(true);
     expect(res.tagsAdded).toContain('DEMO_BOOKED');
     expect(res.leadTemperature).toBe('hot');
-    expect(res.customerResponse).toContain('Your Free Abacus Demo is booked!');
+    expect(res.customerResponse).toContain('Your Abacus demo is booked!');
     expect(res.customerResponse).toContain('45 minutes');
     expect(res.customerResponse).not.toContain('ADD_TAG');
     expect(res.customerResponse).not.toContain('NOTE:');
@@ -245,7 +303,7 @@ describe('AI Agent Action System', () => {
       contactId,
       inboundText: input,
       messages: history,
-      contactRecord: { id: contactId, email: 'rohan@example.com' },
+      contactRecord: { id: contactId, name: 'Rohan Verma', email: 'rohan@example.com' },
     });
 
     expect(res.tagsAdded).not.toContain('DEMO_BOOKED');
@@ -392,6 +450,167 @@ describe('AI Agent Action System', () => {
     expect(res.isHandoff).toBe(true);
     expect(res.crmNoteCreated).toContain('Handoff to human agent');
     expect(res.customerResponse).toContain('connecting you with one of our team members');
+  });
+
+  // ============================================================
+  // TEST 11 — Rescheduling / Alternative slot request (Golden Rules 17, 18 & 19)
+  // Customer: "Can you check 5pm if possible" with active booking
+  // Expected:
+  // - System identifies active booking
+  // - Does NOT hand off to human
+  // - Checks 5:00 PM IST (17:00-17:45 IST)
+  // - Updates external Google Calendar event
+  // - Updates CRM booking record (no duplicate booking)
+  // - Confirms rescheduled appointment at 5:00 PM IST
+  // ============================================================
+  it('TEST 11 — Reschedule: customer asks "Can you check 5pm if possible" with existing booking, updates calendar without handoff or duplicate', async () => {
+    // Set existing active booking
+    currentActiveBooking = {
+      id: 'booking-existing-123',
+      google_event_id: 'g-event-existing-999',
+      start_time: '2026-10-09T05:30:00.000Z', // 11:00 AM IST
+      end_time: '2026-10-09T06:15:00.000Z',
+      timezone: 'Asia/Kolkata',
+      meet_link: 'https://meet.google.com/test-meet',
+      status: 'confirmed',
+    };
+
+    const input = 'Can you check 5pm if possible';
+    const history: ChatMessage[] = [
+      { role: 'user', content: 'I want Abacus classes for my 9 year old' },
+      { role: 'assistant', content: 'Your demo is scheduled for Friday at 11:00 AM' },
+      { role: 'user', content: input },
+    ];
+
+    const res = await runAiActionPipeline({
+      db: mockDb as unknown as SupabaseClient,
+      accountId,
+      conversationId,
+      contactId,
+      inboundText: input,
+      messages: history,
+      contactRecord: {
+        id: contactId,
+        name: 'Parent Name',
+        email: 'parent@example.com',
+      },
+    });
+
+    // 1. MUST NOT hand off
+    expect(res.isHandoff).toBe(false);
+    expect(res.tagsAdded).not.toContain('HUMAN_HANDOFF');
+
+    // 2. Calendar rescheduling succeeded
+    expect(res.calendarResult).toBeDefined();
+    expect(res.calendarResult?.booked).toBe(true);
+
+    // 3. Response confirms 5:00 PM and rescheduling
+    expect(res.customerResponse).toContain('rescheduled');
+    expect(res.customerResponse).toContain('5:00 PM');
+    expect(res.customerResponse).toContain('45 minutes');
+    expect(res.customerResponse).not.toContain('11:00 AM');
+    expect(res.customerResponse).not.toContain('4:30 PM');
+  });
+
+  // ============================================================
+  // TEST 12 — Exact Failure Reproduction from Screenshot (Section 22)
+  // Turn 1: "I want trial class for my son." -> tags: ABACUS_KIDS_INTEREST, INTERESTED, DEMO_REQUESTED, HOT_LEAD
+  // Turn 2: "Saturday 5pm" -> preserves 5:00 PM IST (17:00-17:45), creates real Google Calendar event, DEMO_BOOKED
+  // ============================================================
+  it('TEST 12 — Exact failure reproduction from screenshot: trial class inquiry tagged immediately, Saturday 5pm booked at 5:00 PM IST', async () => {
+    // Turn 1
+    const turn1Input = 'I want trial class for my son.';
+    const res1 = await runAiActionPipeline({
+      db: mockDb as unknown as SupabaseClient,
+      accountId,
+      conversationId,
+      contactId,
+      inboundText: turn1Input,
+      messages: [{ role: 'user', content: turn1Input }],
+      contactRecord: { id: contactId, name: 'Parent', email: null },
+    });
+
+    expect(res1.tagsAdded).toContain('ABACUS_KIDS_INTEREST');
+    expect(res1.tagsAdded).toContain('INTERESTED');
+    expect(res1.tagsAdded).toContain('DEMO_REQUESTED');
+    expect(res1.leadTemperature).toBe('hot');
+
+    // Turn 2 — Customer gives slot & email, AI asks for name (Section 7)
+    const turn2Input = 'genipluskids@gmail.com Saturday 5pm';
+    const res2 = await runAiActionPipeline({
+      db: mockDb as unknown as SupabaseClient,
+      accountId,
+      conversationId,
+      contactId,
+      inboundText: turn2Input,
+      messages: [
+        { role: 'user', content: turn1Input },
+        { role: 'assistant', content: res1.customerResponse },
+        { role: 'user', content: turn2Input },
+      ],
+      contactRecord: { id: contactId, name: 'Parent', email: null },
+    });
+
+    expect(res2.customerResponse).toContain('What name should I use for the booking?');
+
+    // Turn 3 — Customer provides name "Hitendra" -> Google Calendar booked (Section 14)
+    const turn3Input = 'Hitendra';
+    const res3 = await runAiActionPipeline({
+      db: mockDb as unknown as SupabaseClient,
+      accountId,
+      conversationId,
+      contactId,
+      inboundText: turn3Input,
+      messages: [
+        { role: 'user', content: turn1Input },
+        { role: 'assistant', content: res1.customerResponse },
+        { role: 'user', content: turn2Input },
+        { role: 'assistant', content: res2.customerResponse },
+        { role: 'user', content: turn3Input },
+      ],
+      contactRecord: { id: contactId, name: 'Hitendra', email: 'genipluskids@gmail.com' },
+    });
+
+    expect(res3.tagsAdded).toContain('DEMO_BOOKED');
+    expect(res3.calendarResult?.booked).toBe(true);
+    expect(res3.customerResponse).toContain('5:00 PM');
+    expect(res3.customerResponse).toContain('45 minutes');
+    expect(res3.customerResponse).not.toContain('11:00 AM');
+    expect(res3.customerResponse).not.toContain('4:30 PM');
+  });
+
+  // ============================================================
+  // TEST 13 — Golden Rule 1: Never fake a booking on external calendar failure
+  // If calendar API fails, DEMO_BOOKED is NEVER added and AI never claims booking
+  // ============================================================
+  it('TEST 13 — Golden Rule 1: Never fake a booking if calendar API fails', async () => {
+    const { createGoogleCalendarBooking } = await import('@/lib/calendar/google-calendar');
+    // Force createGoogleCalendarBooking to fail
+    vi.mocked(createGoogleCalendarBooking).mockRejectedValueOnce(new Error('Google Calendar Service Unavailable'));
+
+    const input = 'Tomorrow at 5 PM.';
+    const res = await runAiActionPipeline({
+      db: mockDb as unknown as SupabaseClient,
+      accountId,
+      conversationId,
+      contactId,
+      inboundText: input,
+      messages: [
+        { role: 'user', content: 'I want Abacus class for my son' },
+        { role: 'assistant', content: 'What time works?' },
+        { role: 'user', content: input },
+      ],
+      contactRecord: { id: contactId, name: 'Rohan Verma', email: 'parent@example.com' },
+    });
+
+    // DEMO_BOOKED MUST NOT be added
+    expect(res.tagsAdded).not.toContain('DEMO_BOOKED');
+    expect(res.calendarResult?.booked).toBeUndefined();
+
+    // AI MUST NOT claim demo is booked
+    expect(res.customerResponse).not.toContain('Your Free Abacus Demo is booked');
+    expect(res.customerResponse).not.toContain('Confirmed');
+    expect(res.customerResponse).toContain('having trouble reserving that exact slot on Google Calendar');
   });
 
   // ============================================================

@@ -13,12 +13,7 @@ import {
 } from '@/lib/flows/meta-send'
 import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
-import {
-  extractEmailFromText,
-  detectBookingIntent,
-  loadCalendarConfig,
-  executeDemoBooking,
-} from '@/lib/calendar/booking-coordinator'
+
 import {
   runAiActionPipeline,
   sanitizeCustomerResponse,
@@ -157,6 +152,11 @@ export async function dispatchInboundToAiReply(
           intents.products.length > 0 ||
           intents.isReadyToBook ||
           intents.hasBothDateAndTime ||
+          intents.hasOnlyDate ||
+          intents.hasOnlyTime ||
+          Boolean(intents.customerName) ||
+          Boolean(intents.explicitNameProvided) ||
+          Boolean(intents.isSlotCheckOrReschedule) ||
           intents.isHumanHandoffRequested ||
           intents.stageTagsToAdd.length > 0 ||
           intents.signals.length > 0
@@ -221,11 +221,8 @@ export async function dispatchInboundToAiReply(
             return
           }
 
-          // If action pipeline resolved a specific grounded response (booked appointment, slots offer, product demo offer, etc.)
-          if (
-            pipelineResult.customerResponse &&
-            (pipelineResult.calendarResult || pipelineResult.productKey || pipelineResult.crmNoteCreated)
-          ) {
+          // If action pipeline resolved a specific grounded response
+          if (pipelineResult.customerResponse) {
             const { data: claimed, error: claimErr } = await db.rpc('claim_ai_reply_slot', {
               conversation_id: conversationId,
               max_replies: config.autoReplyMaxPerConversation,
@@ -252,48 +249,6 @@ export async function dispatchInboundToAiReply(
         }
       } catch (actionErr) {
         console.warn('[ai auto-reply] action pipeline non-fatal error, falling back to LLM:', actionErr)
-      }
-    }
-
-    // Fallback: Check for Google Calendar Demo / Call booking intent with email if action pipeline didn't consume
-    const extractedEmail = userMsg ? extractEmailFromText(userMsg) : null
-    if (extractedEmail) {
-      const recentAssistantTexts = messages
-        .filter((m) => m.role === 'assistant')
-        .map((m) => m.content)
-      const hasIntent = detectBookingIntent(userMsg, recentAssistantTexts)
-
-      if (hasIntent) {
-        const calConfig = await loadCalendarConfig(db, accountId)
-        if (!calConfig || calConfig.auto_booking_enabled !== false) {
-          const { data: claimed } = await db.rpc('claim_ai_reply_slot', {
-            conversation_id: conversationId,
-            max_replies: config.autoReplyMaxPerConversation,
-          })
-
-          if (claimed === true) {
-            const bookingResult = await executeDemoBooking({
-              db,
-              accountId,
-              contactId,
-              conversationId,
-              configOwnerUserId,
-              email: extractedEmail,
-              preferredTimeText: userMsg,
-              bookedBy: 'ai',
-              sendWhatsAppConfirmation: true,
-            })
-
-            logDecision('AI_RESPONDED', {
-              conversationId,
-              accountId,
-              action: 'calendar_demo_booked',
-              email: extractedEmail,
-              bookingId: bookingResult.booking?.id,
-            })
-            return
-          }
-        }
       }
     }
 

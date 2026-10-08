@@ -35,14 +35,32 @@ export async function getOrCreateAccountTag(
     return existing.id;
   }
 
-  // 2. Insert new tag scoped to this tenant
+  // 2. Fetch owner_user_id for this account to satisfy legacy NOT NULL user_id constraint
+  let ownerUserId: string | null = null;
+  try {
+    const { data: acc } = await db
+      .from('accounts')
+      .select('owner_user_id')
+      .eq('id', accountId)
+      .maybeSingle();
+    ownerUserId = acc?.owner_user_id ?? null;
+  } catch {
+    // best-effort
+  }
+
+  // 3. Insert new tag scoped to this tenant
+  const insertPayload: Record<string, unknown> = {
+    account_id: accountId,
+    name: tagName,
+    color,
+  };
+  if (ownerUserId) {
+    insertPayload.user_id = ownerUserId;
+  }
+
   const { data: created, error: createErr } = await db
     .from('tags')
-    .insert({
-      account_id: accountId,
-      name: tagName,
-      color,
-    })
+    .insert(insertPayload)
     .select('id')
     .maybeSingle();
 
@@ -79,13 +97,25 @@ export async function applyContactTag(args: {
     });
 
     if (res.added) {
+      // Immediately read back from database to verify persistence
+      const { data: verified } = await db
+        .from('contact_tags')
+        .select('tag_id')
+        .eq('contact_id', contactId)
+        .eq('tag_id', tagId)
+        .maybeSingle();
+
+      if (!verified) {
+        console.warn(`[tag-service] Immediate verification failed for tag ${tagName} on contact ${contactId}`);
+      }
+
       await logAiAction({
         db,
         accountId,
         contactId,
         conversationId,
         action: 'TAG_ADDED',
-        details: { tagName, tagId },
+        details: { tagName, tagId, verified: Boolean(verified) },
       });
     }
 

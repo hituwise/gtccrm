@@ -73,14 +73,23 @@ export async function applyScoringSignals(args: {
   const newScore = Math.min(100, Math.max(0, currentScore + pointsDelta));
   const updatedEvents = Array.from(new Set([...currentEvents, ...freshSignals]));
 
-  // 4. Derive temperature: 0-30 Cold, 31-70 Warm, 71-100 Hot
+  // 4. Derive temperature: high-intent signals (demo request, booking, appointment confirmation) are always HOT
+  const highIntentSignals: ScoringSignal[] = [
+    'requests_demo_or_call',
+    'books_demo_or_call',
+    'confirms_appointment',
+    'ready_to_join',
+    'asks_payment',
+  ];
+  const hasHighIntent = updatedEvents.some((e) => highIntentSignals.includes(e as ScoringSignal));
+
   let targetTemp: LeadTemperature | undefined = explicitTemperature;
   if (!targetTemp) {
-    if (newScore >= 71) {
+    if (hasHighIntent || newScore >= 71) {
       targetTemp = 'hot';
-    } else if (newScore >= 31) {
-      targetTemp = 'warm';
-    } else if (newScore > 0) {
+    } else if (newScore >= 31 || updatedEvents.length > 0) {
+      targetTemp = currentTemp === 'hot' ? 'hot' : 'warm';
+    } else {
       targetTemp = currentTemp || 'cold';
     }
   }

@@ -25,10 +25,34 @@ export function detectProductIntent(text: string): ProductKey[] {
     lower.includes('abacus class') ||
     lower.includes('abacus for') ||
     lower.includes('abacus kids') ||
+    lower.includes('abacus demo') ||
     lower.includes('mental math') ||
-    (lower.includes('abacus') && (lower.includes('child') || lower.includes('kid') || lower.includes('son') || lower.includes('daughter') || lower.includes('year old')))
+    (lower.includes('abacus') && (lower.includes('child') || lower.includes('kid') || lower.includes('son') || lower.includes('daughter') || lower.includes('year old'))) ||
+    lower.includes('book demo for my') ||
+    lower.includes('book a demo for my') ||
+    lower.includes('demo for my son') ||
+    lower.includes('demo for my kid') ||
+    lower.includes('demo for my child') ||
+    lower.includes('demo for my daughter') ||
+    lower.includes('trial for my son') ||
+    lower.includes('trial for my kid') ||
+    lower.includes('trial for my child') ||
+    lower.includes('trial class for my son') ||
+    lower.includes('demo class for my son') ||
+    lower.includes('trial class for my kid') ||
+    lower.includes('demo class for my kid') ||
+    lower.includes('class for my son') ||
+    lower.includes('class for my kid') ||
+    lower.includes('class for my daughter') ||
+    (lower.includes('demo') && lower.includes('year old')) ||
+    (lower.includes('trial') && lower.includes('year old')) ||
+    (lower.includes('demo') && (lower.includes('son') || lower.includes('kid') || lower.includes('child') || lower.includes('daughter'))) ||
+    (lower.includes('trial') && (lower.includes('son') || lower.includes('kid') || lower.includes('child') || lower.includes('daughter'))) ||
+    (lower.includes('class') && (lower.includes('son') || lower.includes('kid') || lower.includes('child') || lower.includes('daughter')))
   ) {
-    detected.push('ABACUS_KIDS');
+    if (!lower.includes('teach') && !lower.includes('teacher training') && !lower.includes('gtc')) {
+      detected.push('ABACUS_KIDS');
+    }
   }
 
   // 2. GTC (Teacher Training / start classes)
@@ -98,6 +122,88 @@ export function detectProductIntent(text: string): ProductKey[] {
 }
 
 /**
+ * Extracts a customer / parent name from conversational messages.
+ * Recognizes explicit declarations ("My name is Hitendra") or direct replies to "What name should I use?".
+ */
+export function extractCustomerName(
+  currentText: string,
+  messages: ChatMessage[] = [],
+): { name: string | null; isExplicit: boolean } {
+  const trimmed = currentText.trim();
+  const lower = trimmed.toLowerCase();
+
+  // 1. Explicit declaration: "My name is Hitendra", "I am Hitendra", "Name: Hitendra", "This is Hitendra", "Hitendra here"
+  const m1 = trimmed.match(/(?:my name is|i am|i'm|name is|this is|call me|name:?)\s+([A-Za-z\s.'-]{2,30})/i);
+  if (m1) {
+    const raw = m1[1].trim();
+    if (!/^(?:a|the|an|ready|interested|booking|demo|call)$/i.test(raw)) {
+      return { name: raw, isExplicit: true };
+    }
+  }
+
+  // 2. Direct name reply: If assistant recently asked for name
+  const lastAssistantMsg = messages
+    .filter((m) => m.role === 'assistant')
+    .slice(-1)[0]?.content?.toLowerCase();
+
+  if (
+    lastAssistantMsg &&
+    (lastAssistantMsg.includes('what name') ||
+      lastAssistantMsg.includes('name should i use') ||
+      lastAssistantMsg.includes('your name') ||
+      lastAssistantMsg.includes('parent name') ||
+      lastAssistantMsg.includes('who should i book'))
+  ) {
+    // If user's text is 1 to 4 clean words (not an email, no dates/times)
+    if (
+      !trimmed.includes('@') &&
+      !/\b(?:am|pm|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(lower) &&
+      /^[A-Za-z\s.'-]{2,40}$/.test(trimmed)
+    ) {
+      return { name: trimmed, isExplicit: true };
+    }
+  }
+
+  // 3. Historical search in user messages for explicit name declaration
+  for (const m of messages.filter((msg) => msg.role === 'user')) {
+    const histMatch = m.content.match(/(?:my name is|i am|i'm|name is|this is|call me|name:?)\s+([A-Za-z\s.'-]{2,30})/i);
+    if (histMatch) {
+      const raw = histMatch[1].trim();
+      if (!/^(?:a|the|an|ready|interested|booking|demo|call)$/i.test(raw)) {
+        return { name: raw, isExplicit: true };
+      }
+    }
+  }
+
+  // 4. Historical search: did user answer a previous "What name should I use" question?
+  for (let i = 0; i < messages.length - 1; i++) {
+    const msg = messages[i];
+    const nextMsg = messages[i + 1];
+    if (msg.role === 'assistant' && nextMsg.role === 'user') {
+      const aLower = msg.content.toLowerCase();
+      if (
+        aLower.includes('what name') ||
+        aLower.includes('name should i use') ||
+        aLower.includes('your name') ||
+        aLower.includes('parent name')
+      ) {
+        const uTrim = nextMsg.content.trim();
+        const uLower = uTrim.toLowerCase();
+        if (
+          !uTrim.includes('@') &&
+          !/\b(?:am|pm|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(uLower) &&
+          /^[A-Za-z\s.'-]{2,40}$/.test(uTrim)
+        ) {
+          return { name: uTrim, isExplicit: true };
+        }
+      }
+    }
+  }
+
+  return { name: null, isExplicit: false };
+}
+
+/**
  * Analyzes conversation turns and inbound message to extract all structured intents,
  * tags, scoring signals, temperature, and booking parameters.
  */
@@ -117,6 +223,9 @@ export function analyzeCustomerIntent(args: {
     .map((m) => m.content)
     .join(' \n ');
   const combinedCustomerText = `${customerHistory}\n${currentText}`;
+
+  // Extract customer name
+  const { name: customerName, isExplicit: explicitNameProvided } = extractCustomerName(currentText, messages);
 
   // 1. Detect products
   const products = detectProductIntent(currentText);
@@ -181,11 +290,19 @@ export function analyzeCustomerIntent(args: {
     lower.includes('book my demo') ||
     lower.includes('book a demo') ||
     lower.includes('free demo') ||
+    lower.includes('trial class') ||
+    lower.includes('demo class') ||
+    lower.includes('trial for') ||
+    lower.includes('demo for') ||
+    lower.includes('trial class for my son') ||
+    lower.includes('demo class for my son') ||
     lower.includes('yes book') ||
     lower.includes('yes, book') ||
     lower.includes('see a demo') ||
     lower.includes('product demo') ||
-    lower.includes('abacus demo');
+    lower.includes('abacus demo') ||
+    (lower.includes('demo') && (lower.includes('class') || lower.includes('session') || lower.includes('book') || lower.includes('son') || lower.includes('kid'))) ||
+    (lower.includes('trial') && (lower.includes('class') || lower.includes('session') || lower.includes('book') || lower.includes('son') || lower.includes('kid')));
   if (requestsDemo) {
     signals.push('requests_demo_or_call');
     stageTagsToAdd.push('DEMO_REQUESTED');
@@ -229,16 +346,34 @@ export function analyzeCustomerIntent(args: {
     stageTagsToAdd.push('ENROLLMENT_INTEREST');
   }
 
-  // Confirmation of appointment
-  const dateSpecified = hasDateSpecified(currentText);
-  const timeSpecified = hasTimeSpecified(currentText);
-  const hasBothDateAndTime = dateSpecified && timeSpecified;
+  // Confirmation of appointment across current text and conversation history
+  const currentHasDate = hasDateSpecified(currentText);
+  const currentHasTime = hasTimeSpecified(currentText);
+  const historyHasDate = hasDateSpecified(customerHistory);
+  const historyHasTime = hasTimeSpecified(customerHistory);
+
+  const dateSpecified = currentHasDate || historyHasDate;
+  const timeSpecified = currentHasTime || historyHasTime;
+  const hasBothDateAndTime = (currentHasDate && currentHasTime) || (dateSpecified && timeSpecified);
   const hasOnlyDate = dateSpecified && !timeSpecified;
   const hasOnlyTime = !dateSpecified && timeSpecified;
 
-  if (hasBothDateAndTime) {
+  if (currentHasDate && currentHasTime) {
+    signals.push('confirms_appointment');
+  } else if (hasBothDateAndTime && (currentHasDate || currentHasTime)) {
     signals.push('confirms_appointment');
   }
+
+  // Slot check / reschedule intent (e.g. "Can you check 5pm if possible", "check 6 PM instead")
+  const isSlotCheckOrReschedule =
+    (lower.includes('check') ||
+      lower.includes('instead') ||
+      lower.includes('reschedule') ||
+      lower.includes('change') ||
+      lower.includes('move to') ||
+      lower.includes('possible') ||
+      lower.includes('available')) &&
+    currentHasTime;
 
   // Follow-up required
   if (
@@ -250,12 +385,38 @@ export function analyzeCustomerIntent(args: {
     stageTagsToAdd.push('FOLLOW_UP_REQUIRED');
   }
 
-  // 3. Lead Temperature Classification
+  // 3. Extract booking metadata
+  const email =
+    extractEmailFromText(currentText) ||
+    extractEmailFromText(customerHistory) ||
+    contactEmail ||
+    null;
+  const childAge = extractChildAge(combinedCustomerText);
+
+  const requestedDateText = currentHasDate
+    ? currentText
+    : historyHasDate
+    ? customerHistory
+    : null;
+  const requestedTimeText = currentHasTime
+    ? currentText
+    : historyHasTime
+    ? customerHistory
+    : null;
+
+  // 4. Lead Temperature Classification
   let temperature: LeadTemperature | undefined = undefined;
 
+  const hasDemoOrCallInHistory = /demo|trial|book|call/i.test(combinedCustomerText);
   const isHot =
+    requestsDemo ||
+    requestsCall ||
+    hasDemoOrCallInHistory ||
+    asksEnrollment ||
     asksPayment ||
     readyToJoin ||
+    Boolean(email && (dateSpecified || timeSpecified)) ||
+    hasBothDateAndTime ||
     lower.includes('i want to join') ||
     lower.includes('i want to enroll') ||
     lower.includes('book my demo') ||
@@ -264,19 +425,20 @@ export function analyzeCustomerIntent(args: {
     lower.includes('pay and join');
 
   const isWarm =
-    asksPricing ||
-    lower.includes('i am interested') ||
-    lower.includes('how does it work') ||
-    lower.includes('send me details') ||
-    lower.includes('explain the program') ||
-    requestsDemo ||
-    requestsCall ||
-    products.length > 0;
+    !isHot &&
+    (asksPricing ||
+      lower.includes('i am interested') ||
+      lower.includes('how does it work') ||
+      lower.includes('send me details') ||
+      lower.includes('explain the program') ||
+      products.length > 0);
 
   const isCold =
-    lower.includes('just checking') ||
-    lower.includes('not interested') ||
-    lower.includes('maybe later');
+    !isHot &&
+    !isWarm &&
+    (lower.includes('just checking') ||
+      lower.includes('not interested') ||
+      lower.includes('maybe later'));
 
   if (isHot) {
     temperature = 'hot';
@@ -285,10 +447,6 @@ export function analyzeCustomerIntent(args: {
   } else if (isCold) {
     temperature = 'cold';
   }
-
-  // 4. Extract booking metadata
-  const email = extractEmailFromText(currentText) || contactEmail || null;
-  const childAge = extractChildAge(combinedCustomerText);
 
   // Check if ready to book
   const isReadyToBook =
@@ -324,6 +482,8 @@ export function analyzeCustomerIntent(args: {
     stageTagsToAdd,
     signals,
     temperature,
+    customerName,
+    explicitNameProvided,
     requestedDateText: dateSpecified ? currentText : null,
     requestedTimeText: timeSpecified ? currentText : null,
     email,
@@ -335,5 +495,6 @@ export function analyzeCustomerIntent(args: {
     hasBothDateAndTime,
     hasOnlyDate,
     hasOnlyTime,
+    isSlotCheckOrReschedule,
   };
 }

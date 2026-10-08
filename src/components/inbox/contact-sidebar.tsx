@@ -694,7 +694,25 @@ export function ContactSidebar({
                       <div className="flex items-center gap-1.5 text-muted-foreground text-[11px]">
                         <Clock className="h-3 w-3 shrink-0" />
                         <span>
-                          {format(new Date(booking.start_time), "EEE, MMM d @ h:mm a")}
+                          {(() => {
+                            try {
+                              const tz = booking.timezone || 'Asia/Kolkata';
+                              const d = new Date(booking.start_time);
+                              const formatted = new Intl.DateTimeFormat('en-US', {
+                                timeZone: tz,
+                                weekday: 'short',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: 'numeric',
+                                minute: '2-digit',
+                                hour12: true,
+                              }).format(d);
+                              const tzLabel = tz === 'Asia/Kolkata' ? 'IST' : tz;
+                              return `${formatted} (${tzLabel})`;
+                            } catch {
+                              return format(new Date(booking.start_time), "EEE, MMM d @ h:mm a");
+                            }
+                          })()}
                         </span>
                       </div>
                       {booking.meet_link && booking.meet_link.startsWith("http") && (

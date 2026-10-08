@@ -104,9 +104,10 @@ export interface CreateBookingPayload {
 
 export interface BookingResult {
   success: boolean;
-  booking: CalendarBooking;
+  booking?: CalendarBooking;
   confirmationMessage?: string;
   meetLink?: string | null;
   googleEventId?: string | null;
+  readableDateTime?: string;
   error?: string;
 }

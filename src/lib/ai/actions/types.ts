@@ -165,6 +165,8 @@ export interface DetectedIntents {
   stageTagsToAdd: StageTagName[];
   signals: ScoringSignal[];
   temperature?: LeadTemperature;
+  customerName?: string | null;
+  explicitNameProvided?: boolean;
   requestedDateText?: string | null;
   requestedTimeText?: string | null;
   email?: string | null;
@@ -176,6 +178,7 @@ export interface DetectedIntents {
   hasBothDateAndTime: boolean;
   hasOnlyDate: boolean;
   hasOnlyTime: boolean;
+  isSlotCheckOrReschedule?: boolean;
 }
 
 export interface AvailableSlotItem {

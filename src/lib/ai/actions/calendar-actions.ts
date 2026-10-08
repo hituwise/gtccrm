@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   loadCalendarConfig,
   executeDemoBooking,
+  rescheduleDemoBooking,
 } from '@/lib/calendar/booking-coordinator';
 import {
   checkGoogleCalendarAvailability,
@@ -36,6 +37,8 @@ export interface CalendarActionContext {
   childAge?: number | null;
   customerName?: string;
   timezone?: string;
+  referenceDate?: Date;
+  existingBookingId?: string;
 }
 
 /**
@@ -51,24 +54,25 @@ export async function executeCheckAvailability(
   durationMinutes: number;
   conflictReason?: string;
 }> {
-  const { db, accountId, contactId, conversationId, productKey, productConfig, preferredTimeText } = context;
+  const { db, accountId, contactId, conversationId, productKey, productConfig, preferredTimeText, referenceDate, timezone } = context;
 
   const resolvedConfig = productConfig || (productKey ? DEFAULT_PRODUCT_CONFIGS[productKey] : DEFAULT_PRODUCT_CONFIGS.ABACUS_KIDS);
   const durationMinutes = resolvedConfig.durationMinutes;
 
-  const slot = parseBookingSlot(preferredTimeText, durationMinutes);
-
   const calConfig = await loadCalendarConfig(db, accountId);
+  const tz = timezone || calConfig?.default_timezone || 'Asia/Kolkata';
 
-  // If calendar is not connected or inactive, treat as available to avoid blocking,
-  // or return available: true with note.
+  const slot = parseBookingSlot(preferredTimeText, durationMinutes, referenceDate || new Date(), tz);
+
+  // If calendar is not connected or inactive, return unavailable so we don't fake availability
   if (!calConfig?.is_active || (!calConfig.service_account_key && !calConfig.oauth_credentials)) {
     return {
-      available: true,
+      available: false,
       startTime: slot.startTime,
       endTime: slot.endTime,
       humanText: slot.humanText,
       durationMinutes,
+      conflictReason: 'Calendar is not connected or active',
     };
   }
 
@@ -162,6 +166,9 @@ export async function executeBookAppointment(
   const title = `${resolvedConfig.appointmentType}: ${customerName || 'Customer'}`;
 
   try {
+    const calConfig = await loadCalendarConfig(db, accountId);
+    const tz = timezone || calConfig?.default_timezone || 'Asia/Kolkata';
+
     const bookingResult = await executeDemoBooking({
       db,
       accountId,
@@ -169,6 +176,8 @@ export async function executeBookAppointment(
       conversationId,
       configOwnerUserId,
       email,
+      customerName,
+      childAge,
       preferredTimeText,
       bookedBy: 'ai',
       manualTitle: title,
@@ -176,22 +185,25 @@ export async function executeBookAppointment(
       sendWhatsAppConfirmation: false, // AI Agent coordinates response message
     });
 
-    if (!bookingResult.success || !bookingResult.booking) {
+    // GOLDEN RULE: Must verify booking success AND real external event ID
+    if (!bookingResult.success || !bookingResult.booking || !bookingResult.booking.google_event_id) {
       await logAiAction({
         db,
         accountId,
         contactId,
         conversationId,
         action: 'APPOINTMENT_BOOKING_FAILED',
-        details: { error: bookingResult.error, email, preferredTimeText },
+        details: { error: bookingResult.error, email, preferredTimeText, externalEventIdMissing: !bookingResult.booking?.google_event_id },
       });
 
       return {
         action: 'book_appointment',
         success: false,
-        error: bookingResult.error || 'Booking creation failed',
+        error: bookingResult.error || 'Google Calendar event creation failed — no external event ID returned',
       };
     }
+
+    const extEventId = bookingResult.booking.google_event_id;
 
     // 1. Tag with DEMO_BOOKED or CALL_BOOKED
     const bookingTag = resolvedConfig.ctaType === 'Call' ? 'CALL_BOOKED' : 'DEMO_BOOKED';
@@ -223,8 +235,8 @@ export async function executeBookAppointment(
       explicitTemperature: 'hot',
     });
 
-    // 4. Create internal CRM milestone note
-    const formattedDate = formatBookingDateTime(bookingResult.booking.start_time, timezone);
+    // 4. Create internal CRM milestone note with external event ID
+    const formattedDate = formatBookingDateTime(bookingResult.booking.start_time, tz);
     const detailParts: string[] = [`Slot: ${formattedDate}`, `Duration: ${duration} mins`];
     if (childAge) detailParts.push(`Child Age: ${childAge}`);
     if (bookingResult.booking.meet_link) detailParts.push(`Google Meet: ${bookingResult.booking.meet_link}`);
@@ -237,8 +249,8 @@ export async function executeBookAppointment(
       userId: configOwnerUserId,
       productName: resolvedConfig.appointmentType,
       customerType: childAge ? 'Parent' : 'Customer',
-      mainRequirement: childAge ? `Abacus program for ${childAge}-year-old` : resolvedConfig.appointmentType,
-      importantInfo: detailParts.join(', '),
+      mainRequirement: childAge ? `Abacus program for ${childAge}-year-old child` : resolvedConfig.appointmentType,
+      importantInfo: `${detailParts.join(', ')}. External event ID: ${extEventId}`,
       bookingStatus: 'Confirmed & Calendar Scheduled',
       nextAction: 'Attend session / admissions onboarding',
     });
@@ -263,6 +275,7 @@ export async function executeBookAppointment(
       action: 'APPOINTMENT_BOOKED',
       details: {
         bookingId: bookingResult.booking.id,
+        externalEventId: extEventId,
         title,
         startTime: bookingResult.booking.start_time,
         meetLink: bookingResult.booking.meet_link,
@@ -289,6 +302,115 @@ export async function executeBookAppointment(
       details: { error: message },
     });
 
+    return {
+      action: 'book_appointment',
+      success: false,
+      error: message,
+    };
+  }
+}
+
+/**
+ * Reschedules an existing confirmed booking to a new requested time.
+ */
+export async function executeRescheduleAppointment(
+  context: CalendarActionContext & { existingBookingId: string },
+): Promise<CalendarActionResult> {
+  const {
+    db,
+    accountId,
+    contactId,
+    conversationId,
+    configOwnerUserId,
+    productKey = 'ABACUS_KIDS',
+    productConfig,
+    preferredTimeText,
+    existingBookingId,
+    customerName,
+    timezone,
+    childAge,
+  } = context;
+
+  const resolvedConfig = productConfig || DEFAULT_PRODUCT_CONFIGS[productKey];
+  const duration = resolvedConfig.durationMinutes;
+
+  const calConfig = await loadCalendarConfig(db, accountId);
+  const tz = timezone || calConfig?.default_timezone || 'Asia/Kolkata';
+
+  const slot = parseBookingSlot(preferredTimeText, duration, new Date(), tz);
+
+  try {
+    const res = await rescheduleDemoBooking({
+      db,
+      accountId,
+      contactId,
+      bookingId: existingBookingId,
+      newStartTime: slot.startTime,
+      newEndTime: slot.endTime,
+      timezone: tz,
+      configOwnerUserId,
+      conversationId,
+    });
+
+    if (!res.success || !res.booking) {
+      await logAiAction({
+        db,
+        accountId,
+        contactId,
+        conversationId,
+        action: 'APPOINTMENT_BOOKING_FAILED',
+        details: { error: res.error, existingBookingId, preferredTimeText },
+      });
+
+      return {
+        action: 'book_appointment',
+        success: false,
+        error: res.error || 'Rescheduling failed',
+      };
+    }
+
+    const formattedDate = formatBookingDateTime(slot.startTime, tz);
+    const extId = res.booking.google_event_id || 'N/A';
+
+    await createInternalCrmNote({
+      db,
+      accountId,
+      contactId,
+      conversationId,
+      userId: configOwnerUserId,
+      productName: resolvedConfig.appointmentType,
+      customerType: childAge ? 'Parent' : 'Customer',
+      mainRequirement: `Rescheduled demo to ${formattedDate}`,
+      importantInfo: `Rescheduled to ${formattedDate}. Duration: ${duration} mins. External event ID: ${extId}`,
+      bookingStatus: 'Rescheduled & Calendar Updated',
+      nextAction: 'Attend rescheduled session',
+    });
+
+    await logAiAction({
+      db,
+      accountId,
+      contactId,
+      conversationId,
+      action: 'APPOINTMENT_BOOKED',
+      details: {
+        bookingId: res.booking.id,
+        rescheduled: true,
+        startTime: slot.startTime,
+        externalEventId: extId,
+        meetLink: res.booking.meet_link,
+      },
+    });
+
+    return {
+      action: 'book_appointment',
+      success: true,
+      booked: true,
+      bookingId: res.booking.id,
+      meetLink: res.booking.meet_link,
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[calendar-actions] executeRescheduleAppointment error:', message);
     return {
       action: 'book_appointment',
       success: false,
