@@ -483,11 +483,21 @@ export async function runAiActionPipeline(
               timezone: 'Asia/Kolkata',
               meetLink: bookRes.meetLink,
             });
+          } else if (bookRes.error?.includes('permission is disabled')) {
+            customerResponse =
+              `Thank you for sharing your details! Our team will reach out directly to schedule and confirm your ${apptName}.`;
           } else {
             customerResponse =
               `I'm having trouble reserving that exact slot on Google Calendar right now. Please let me know another time that works or our team will reach out directly.`;
           }
         }
+      } else if (check.conflictReason?.includes('permission is disabled')) {
+        const apptName =
+          effectiveProductConfig.productKey === 'ABACUS_KIDS'
+            ? 'Abacus demo'
+            : effectiveProductConfig.appointmentType;
+        customerResponse =
+          `Thank you for sharing your details! Our team will reach out directly to schedule and confirm your ${apptName}.`;
       } else {
         const alternatives = await executeGetAvailableSlots(
           {

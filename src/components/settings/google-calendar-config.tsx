@@ -13,6 +13,10 @@ import {
   Trash2,
   Copy,
   Check,
+  ShieldCheck,
+  Clock,
+  Layers,
+  MessageSquare,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -21,9 +25,10 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import type { GoogleCalendarConfigSafe, CalendarBooking } from '@/types/calendar';
+import type { GoogleCalendarConfigSafe, CalendarBooking, ProductAppointmentTypeConfig } from '@/types/calendar';
 
 const COMMON_TIMEZONES = [
+  'Asia/Kolkata',
   'UTC',
   'America/New_York',
   'America/Chicago',
@@ -33,10 +38,66 @@ const COMMON_TIMEZONES = [
   'Europe/Paris',
   'Europe/Berlin',
   'Asia/Dubai',
-  'Asia/Kolkata',
   'Asia/Singapore',
   'Asia/Tokyo',
   'Australia/Sydney',
+];
+
+const DEFAULT_APPOINTMENT_TYPES: ProductAppointmentTypeConfig[] = [
+  {
+    productKey: 'ABACUS_KIDS',
+    tagName: 'ABACUS_KIDS_INTEREST',
+    appointmentType: 'Free Abacus Demo',
+    durationMinutes: 45,
+    ctaType: 'Demo',
+    teamName: 'Kids/Admissions',
+    eventTitleTemplate: '{{name}} - Abacus Demo',
+  },
+  {
+    productKey: 'GTC',
+    tagName: 'GTC_INTEREST',
+    appointmentType: 'GTC Training / Business Call',
+    durationMinutes: 30,
+    ctaType: 'Call',
+    teamName: 'Teacher Training/Sales',
+    eventTitleTemplate: '{{name}} - GTC Training Call',
+  },
+  {
+    productKey: 'RUBIKS_CUBE',
+    tagName: 'RUBIKS_CUBE_INTEREST',
+    appointmentType: "Rubik's Cube Demo",
+    durationMinutes: 45,
+    ctaType: 'Demo',
+    teamName: 'Kids Programs',
+    eventTitleTemplate: "{{name}} - Rubik's Cube Demo",
+  },
+  {
+    productKey: 'GOLD',
+    tagName: 'GOLD_INTEREST',
+    appointmentType: 'Gold Business Growth Call',
+    durationMinutes: 45,
+    ctaType: 'Call',
+    teamName: 'Business Growth/Sales',
+    eventTitleTemplate: '{{name}} - Business Growth Call',
+  },
+  {
+    productKey: 'MAA',
+    tagName: 'MAA_INTEREST',
+    appointmentType: 'MAA Product Demo',
+    durationMinutes: 30,
+    ctaType: 'Demo',
+    teamName: 'Academy Software/Product',
+    eventTitleTemplate: '{{name}} - MAA Product Demo',
+  },
+  {
+    productKey: 'LEAD_PILOT',
+    tagName: 'LEAD_PILOT_INTEREST',
+    appointmentType: 'Lead Pilot Demo / Call',
+    durationMinutes: 30,
+    ctaType: 'Demo/Call',
+    teamName: 'SaaS/Sales',
+    eventTitleTemplate: '{{name}} - Lead Pilot Demo',
+  },
 ];
 
 export function GoogleCalendarConfig() {
@@ -52,22 +113,21 @@ export function GoogleCalendarConfig() {
   const [authType, setAuthType] = useState<'service_account' | 'oauth'>('service_account');
   const [serviceAccountKey, setServiceAccountKey] = useState('');
   const [isActive, setIsActive] = useState(true);
-  const [autoBookingEnabled, setAutoBookingEnabled] = useState(true);
-  const [meetingTitle, setMeetingTitle] = useState('LeadPilot Demo Call');
-  const [meetingDuration, setMeetingDuration] = useState('30');
-  const [timezone, setTimezone] = useState(() => {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    } catch {
-      return 'UTC';
-    }
-  });
+  const [allowAiBooking, setAllowAiBooking] = useState(true);
+  const [timezone, setTimezone] = useState('Asia/Kolkata');
+  const [workingHoursStart, setWorkingHoursStart] = useState('09:00');
+  const [workingHoursEnd, setWorkingHoursEnd] = useState('18:00');
+  const [bufferMinutes, setBufferMinutes] = useState('15');
+
+  // Product appointment types
+  const [appointmentTypes, setAppointmentTypes] = useState<ProductAppointmentTypeConfig[]>(DEFAULT_APPOINTMENT_TYPES);
+
   const [confirmationTemplate, setConfirmationTemplate] = useState(
-    '🎉 Great news! Your demo call has been scheduled.\n\n' +
-    '📅 Date & Time: {{date_time}}\n' +
-    '📧 Calendar invite sent to: {{email}}\n' +
-    '📹 Google Meet: {{meet_link}}\n\n' +
-    'We look forward to speaking with you! Reply here anytime if you need to reschedule.',
+    'Perfect 😊 Your {{title}} is booked!\n\n' +
+    '📅 {{date_time}}\n' +
+    '⏱️ {{duration}} minutes\n' +
+    '💻 Google Meet: {{meet_link}}\n\n' +
+    'See you there! 🎉 Reply here anytime if you need to reschedule.',
   );
 
   const [hasStoredKey, setHasStoredKey] = useState(false);
@@ -92,12 +152,16 @@ export function GoogleCalendarConfig() {
         setCalendarId(data.calendar_id || 'primary');
         setAuthType(data.auth_type || 'service_account');
         setIsActive(data.is_active);
-        setAutoBookingEnabled(data.auto_booking_enabled !== false);
-        setMeetingTitle(data.default_meeting_title || 'LeadPilot Demo Call');
-        setMeetingDuration(String(data.default_meeting_duration || 30));
-        setTimezone(data.default_timezone || timezone);
+        setAllowAiBooking(data.allow_ai_booking !== false && data.auto_booking_enabled !== false);
+        setTimezone(data.default_timezone || 'Asia/Kolkata');
+        setWorkingHoursStart(data.working_hours_start || '09:00');
+        setWorkingHoursEnd(data.working_hours_end || '18:00');
+        setBufferMinutes(String(data.buffer_between_meetings || 15));
         if (data.confirmation_message_template) {
           setConfirmationTemplate(data.confirmation_message_template);
+        }
+        if (data.appointment_types && data.appointment_types.length > 0) {
+          setAppointmentTypes(data.appointment_types);
         }
         setHasStoredKey(Boolean(data.has_key));
         setServiceAccountEmail(data.service_account_email || null);
@@ -124,6 +188,14 @@ export function GoogleCalendarConfig() {
     }
   }
 
+  function handleUpdateAppointmentType(index: number, patch: Partial<ProductAppointmentTypeConfig>) {
+    setAppointmentTypes((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], ...patch };
+      return next;
+    });
+  }
+
   async function handleSave() {
     try {
       setSaving(true);
@@ -131,11 +203,14 @@ export function GoogleCalendarConfig() {
         auth_type: authType,
         calendar_id: calendarId.trim() || 'primary',
         is_active: isActive,
-        auto_booking_enabled: autoBookingEnabled,
-        default_meeting_title: meetingTitle.trim(),
-        default_meeting_duration: Number(meetingDuration) || 30,
+        auto_booking_enabled: allowAiBooking,
+        allow_ai_booking: allowAiBooking,
         default_timezone: timezone,
+        working_hours_start: workingHoursStart,
+        working_hours_end: workingHoursEnd,
+        buffer_between_meetings: Number(bufferMinutes) || 15,
         confirmation_message_template: confirmationTemplate.trim(),
+        appointment_types: appointmentTypes,
       };
 
       if (serviceAccountKey.trim()) {
@@ -249,10 +324,10 @@ export function GoogleCalendarConfig() {
               <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <CalendarIcon className="h-5 w-5" />
               </div>
-              <CardTitle className="text-xl font-bold">Google Calendar & Demo Booking</CardTitle>
+              <CardTitle className="text-xl font-bold">Google Calendar & Appointment Settings</CardTitle>
             </div>
             <CardDescription className="text-sm">
-              Connect Google Calendar to automate client demo and call scheduling directly over WhatsApp with instant Google Meet links.
+              Connect Google Calendar and govern AI Agent booking permissions, product durations, and confirmation templates.
             </CardDescription>
           </div>
           <div>
@@ -295,12 +370,12 @@ export function GoogleCalendarConfig() {
             </div>
           )}
 
-          {/* Quick Setup Guide Toggle */}
+          {/* Setup Guide Toggle */}
           <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                 <Sparkles className="h-4 w-4 text-primary" />
-                How Google Calendar Demo Booking Works
+                How the Verified AI Booking Architecture Works
               </div>
               <Button
                 variant="ghost"
@@ -308,40 +383,46 @@ export function GoogleCalendarConfig() {
                 onClick={() => setShowGuide(!showGuide)}
                 className="h-7 text-xs text-primary"
               >
-                {showGuide ? 'Hide Guide' : 'View Setup Steps'}
+                {showGuide ? 'Hide Details' : 'View Architecture'}
               </Button>
             </div>
             {showGuide && (
               <div className="mt-3 space-y-2 border-t border-border/40 pt-3 text-xs text-muted-foreground">
                 <ol className="list-inside list-decimal space-y-1.5">
                   <li>
-                    <span className="font-semibold text-foreground">Client expresses intent</span>: In WhatsApp chat, the client asks to book a call or demo.
+                    <span className="font-semibold text-foreground">Intent & Product Detection</span>: Inbound messages are evaluated for product interest (Abacus, GTC, Rubik&apos;s, etc.) and intent.
                   </li>
                   <li>
-                    <span className="font-semibold text-foreground">Collects Email ID</span>: AI or agent asks for their email address (and preferred date/time if any).
+                    <span className="font-semibold text-foreground">Required Fields Gate</span>: AI Agent collects missing fields (Customer Name, Email, Preferred Slot, Child Age) without duplicate questions.
                   </li>
                   <li>
-                    <span className="font-semibold text-foreground">Automatic Google Calendar Booking</span>: The system creates an event on your calendar with an automatic Google Meet video link and invites their email.
+                    <span className="font-semibold text-foreground">Real-Time Google Calendar Check</span>: Availability is verified against real Google Calendar free/busy slots.
                   </li>
                   <li>
-                    <span className="font-semibold text-foreground">Instant WhatsApp Confirmation</span>: The client immediately receives a confirmation message with the date, time, and Google Meet URL.
+                    <span className="font-semibold text-foreground">Real Calendar Event Creation</span>: External Google Calendar event is created with event ID returned as the source of truth.
+                  </li>
+                  <li>
+                    <span className="font-semibold text-foreground">CRM Record & Milestones</span>: CRM booking row created, tags applied (DEMO_BOOKED), lead score updated, and internal CRM note logged.
+                  </li>
+                  <li>
+                    <span className="font-semibold text-foreground">Confirmation Sent</span>: WhatsApp confirmation sent strictly after successful calendar event creation.
                   </li>
                 </ol>
-                <div className="mt-2 text-[11px] text-muted-foreground/80">
-                  To connect: Create a Service Account in Google Cloud, enable &quot;Google Calendar API&quot;, paste the JSON key below, and share your calendar with the service account email.
-                </div>
               </div>
             )}
           </div>
         </CardContent>
       </Card>
 
-      {/* Main Configuration Card */}
+      {/* SECTION A: Calendar Connection & Credentials */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base font-semibold">Calendar Connection & Credentials</CardTitle>
+          <div className="flex items-center gap-2">
+            <Key className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base font-semibold">A. Calendar Connection & Working Hours</CardTitle>
+          </div>
           <CardDescription className="text-sm">
-            Provide your Google Service Account JSON key. Credentials are encrypted at rest with AES-256-GCM.
+            Provide your Google Service Account JSON key and schedule boundaries. Credentials are encrypted at rest with AES-256-GCM.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -370,7 +451,7 @@ export function GoogleCalendarConfig() {
               className="font-mono text-xs"
             />
             <p className="text-xs text-muted-foreground">
-              Paste the entire JSON file generated from Google Cloud Console &rarr; Service Accounts &rarr; Keys.
+              Paste the service account JSON key from Google Cloud Console &rarr; Service Accounts &rarr; Keys.
             </p>
           </div>
 
@@ -387,34 +468,10 @@ export function GoogleCalendarConfig() {
                 placeholder="primary"
               />
               <p className="text-xs text-muted-foreground">
-                Use <code className="font-semibold">primary</code> for your default calendar, or paste your calendar email ID.
+                Use <code className="font-semibold">primary</code> for your default calendar or your Google Calendar email address.
               </p>
             </div>
 
-            {/* Default Duration */}
-            <div className="space-y-2">
-              <Label htmlFor="duration" className="text-sm font-medium">
-                Demo / Call Duration
-              </Label>
-              <select
-                id="duration"
-                value={meetingDuration}
-                onChange={(e) => setMeetingDuration(e.target.value)}
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <option value="15">15 minutes</option>
-                <option value="30">30 minutes</option>
-                <option value="45">45 minutes</option>
-                <option value="60">60 minutes</option>
-                <option value="90">90 minutes</option>
-              </select>
-              <p className="text-xs text-muted-foreground">
-                Length of the booked Google Meet calendar slot.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
             {/* Timezone */}
             <div className="space-y-2">
               <Label htmlFor="timezone" className="text-sm font-medium">
@@ -433,99 +490,241 @@ export function GoogleCalendarConfig() {
                 ))}
               </select>
               <p className="text-xs text-muted-foreground">
-                Timezone used when displaying and scheduling meeting slots.
-              </p>
-            </div>
-
-            {/* Meeting Title Prefix */}
-            <div className="space-y-2">
-              <Label htmlFor="meetingTitle" className="text-sm font-medium">
-                Default Event Title
-              </Label>
-              <Input
-                id="meetingTitle"
-                value={meetingTitle}
-                onChange={(e) => setMeetingTitle(e.target.value)}
-                placeholder="LeadPilot Demo Call"
-              />
-              <p className="text-xs text-muted-foreground">
-                Prefixed to the client&apos;s name on Google Calendar.
+                Canonical timezone for booking calculations and customer slot presentation.
               </p>
             </div>
           </div>
 
-          {/* AI Auto-Booking Toggle */}
-          <div className="flex items-center justify-between rounded-lg border border-border/60 p-4">
-            <div className="space-y-0.5">
-              <Label htmlFor="autoBooking" className="text-sm font-semibold">
-                AI Automated Booking via WhatsApp
+          <div className="grid gap-4 sm:grid-cols-3">
+            {/* Working Hours Start */}
+            <div className="space-y-2">
+              <Label htmlFor="workingHoursStart" className="text-sm font-medium">
+                Working Hours Start
+              </Label>
+              <Input
+                id="workingHoursStart"
+                type="time"
+                value={workingHoursStart}
+                onChange={(e) => setWorkingHoursStart(e.target.value)}
+              />
+            </div>
+
+            {/* Working Hours End */}
+            <div className="space-y-2">
+              <Label htmlFor="workingHoursEnd" className="text-sm font-medium">
+                Working Hours End
+              </Label>
+              <Input
+                id="workingHoursEnd"
+                type="time"
+                value={workingHoursEnd}
+                onChange={(e) => setWorkingHoursEnd(e.target.value)}
+              />
+            </div>
+
+            {/* Buffer between meetings */}
+            <div className="space-y-2">
+              <Label htmlFor="bufferMinutes" className="text-sm font-medium">
+                Buffer Between Slots (mins)
+              </Label>
+              <Input
+                id="bufferMinutes"
+                type="number"
+                min="0"
+                max="60"
+                value={bufferMinutes}
+                onChange={(e) => setBufferMinutes(e.target.value)}
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* SECTION B: AI Booking Permission & Governance */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base font-semibold">B. AI Booking Permission & Governance</CardTitle>
+          </div>
+          <CardDescription className="text-sm">
+            Control whether the AI Agent has permission to reserve slots and book Google Calendar events.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-start justify-between rounded-lg border border-border/60 bg-muted/20 p-4">
+            <div className="space-y-1">
+              <Label htmlFor="allowAiBooking" className="text-sm font-semibold cursor-pointer">
+                Allow AI Agent to Book Calendar Appointments
               </Label>
               <p className="text-xs text-muted-foreground">
-                When a customer shares their email for a demo/call, automatically book the Google Calendar event and reply with confirmation.
+                When enabled, the AI Agent can check calendar availability and create appointments after all required booking information has been collected.
+              </p>
+              <p className="text-[11px] text-muted-foreground/80 pt-1">
+                When disabled, the AI Agent collects inquiry details and routes the lead to human agents for manual scheduling.
               </p>
             </div>
             <input
-              id="autoBooking"
+              id="allowAiBooking"
               type="checkbox"
-              checked={autoBookingEnabled}
-              onChange={(e) => setAutoBookingEnabled(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              checked={allowAiBooking}
+              onChange={(e) => setAllowAiBooking(e.target.checked)}
+              className="mt-1 h-5 w-5 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
             />
           </div>
 
-          {/* Confirmation Message Template */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="confirmationTemplate" className="text-sm font-medium">
-                WhatsApp Confirmation Message Template
-              </Label>
+          <div className="rounded-lg border border-border/60 bg-background/50 p-3 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 font-medium text-foreground">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+              Verified Safeguard: No Email-Only Auto Booking
             </div>
-            <Textarea
-              id="confirmationTemplate"
-              value={confirmationTemplate}
-              onChange={(e) => setConfirmationTemplate(e.target.value)}
-              rows={4}
-              className="text-xs font-normal"
-            />
-            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs text-muted-foreground">
-              <span>Insert tags:</span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => insertToken('{{date_time}}')}
-                className="h-6 px-1.5 font-mono text-[11px]"
-              >
-                + &#123;&#123;date_time&#125;&#125;
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => insertToken('{{email}}')}
-                className="h-6 px-1.5 font-mono text-[11px]"
-              >
-                + &#123;&#123;email&#125;&#125;
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => insertToken('{{meet_link}}')}
-                className="h-6 px-1.5 font-mono text-[11px]"
-              >
-                + &#123;&#123;meet_link&#125;&#125;
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => insertToken('{{name}}')}
-                className="h-6 px-1.5 font-mono text-[11px]"
-              >
-                + &#123;&#123;name&#125;&#125;
-              </Button>
-            </div>
+            <p className="mt-1">
+              The AI Agent is the sole decision-maker for booking. It strictly validates contact name, email, preferred slot, and program details before verifying availability. Sharing an email alone will never trigger an automatic booking.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* SECTION C: Product-Specific Appointment Types */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Layers className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base font-semibold">C. Product Appointment Types & Durations</CardTitle>
+          </div>
+          <CardDescription className="text-sm">
+            Configure appointment types, slot durations, and Google Calendar event title templates per product line.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="divide-y divide-border/60 rounded-lg border border-border/60">
+            {appointmentTypes.map((item, index) => (
+              <div key={item.productKey} className="p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary" className="font-mono text-xs">
+                      {item.productKey}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      Assigned to: <strong className="text-foreground">{item.teamName}</strong>
+                    </span>
+                  </div>
+                  <Badge variant="outline" className="text-xs">
+                    {item.ctaType}
+                  </Badge>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {/* Appointment Type Name */}
+                  <div className="space-y-1">
+                    <Label className="text-xs font-medium">Appointment Type Name</Label>
+                    <Input
+                      value={item.appointmentType}
+                      onChange={(e) => handleUpdateAppointmentType(index, { appointmentType: e.target.value })}
+                      placeholder="e.g. Free Abacus Demo"
+                      className="h-8 text-xs"
+                    />
+                  </div>
+
+                  {/* Duration Minutes */}
+                  <div className="space-y-1">
+                    <Label className="text-xs font-medium">Duration (minutes)</Label>
+                    <select
+                      value={item.durationMinutes}
+                      onChange={(e) => handleUpdateAppointmentType(index, { durationMinutes: Number(e.target.value) || 45 })}
+                      className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value="15">15 minutes</option>
+                      <option value="30">30 minutes</option>
+                      <option value="45">45 minutes</option>
+                      <option value="60">60 minutes</option>
+                      <option value="90">90 minutes</option>
+                    </select>
+                  </div>
+
+                  {/* Event Title Template */}
+                  <div className="space-y-1">
+                    <Label className="text-xs font-medium">Event Title Template</Label>
+                    <Input
+                      value={item.eventTitleTemplate || `{{name}} - ${item.appointmentType}`}
+                      onChange={(e) => handleUpdateAppointmentType(index, { eventTitleTemplate: e.target.value })}
+                      placeholder="e.g. {{name}} - Abacus Demo"
+                      className="h-8 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* SECTION D: Confirmation Message Template */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <MessageSquare className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base font-semibold">D. WhatsApp Confirmation Message Template</CardTitle>
+          </div>
+          <CardDescription className="text-sm">
+            Template sent to the customer strictly after real Google Calendar appointment creation succeeds.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Textarea
+            id="confirmationTemplate"
+            value={confirmationTemplate}
+            onChange={(e) => setConfirmationTemplate(e.target.value)}
+            rows={5}
+            className="text-xs font-normal"
+          />
+          <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs text-muted-foreground">
+            <span>Insert placeholders:</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => insertToken('{{title}}')}
+              className="h-6 px-1.5 font-mono text-[11px]"
+            >
+              + &#123;&#123;title&#125;&#125;
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => insertToken('{{date_time}}')}
+              className="h-6 px-1.5 font-mono text-[11px]"
+            >
+              + &#123;&#123;date_time&#125;&#125;
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => insertToken('{{duration}}')}
+              className="h-6 px-1.5 font-mono text-[11px]"
+            >
+              + &#123;&#123;duration&#125;&#125;
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => insertToken('{{name}}')}
+              className="h-6 px-1.5 font-mono text-[11px]"
+            >
+              + &#123;&#123;name&#125;&#125;
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => insertToken('{{meet_link}}')}
+              className="h-6 px-1.5 font-mono text-[11px]"
+            >
+              + &#123;&#123;meet_link&#125;&#125;
+            </Button>
           </div>
         </CardContent>
         <CardFooter className="flex flex-wrap items-center justify-between gap-3 border-t border-border/40 pt-4">
@@ -555,7 +754,7 @@ export function GoogleCalendarConfig() {
             )}
           </div>
           <Button onClick={handleSave} disabled={saving}>
-            {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin mr-1.5" />}
             Save Configuration
           </Button>
         </CardFooter>
@@ -567,7 +766,7 @@ export function GoogleCalendarConfig() {
           <div>
             <CardTitle className="text-base font-semibold">Recent Scheduled Demos & Calls</CardTitle>
             <CardDescription className="text-sm">
-              Appointments scheduled automatically via WhatsApp or manually by your team.
+              Verified appointments confirmed via the AI Agent pipeline or scheduled by your team.
             </CardDescription>
           </div>
           <Button variant="outline" size="sm" onClick={loadRecentBookings} disabled={loadingBookings}>
@@ -580,7 +779,7 @@ export function GoogleCalendarConfig() {
               <CalendarIcon className="h-10 w-10 stroke-[1.5] text-muted-foreground/40" />
               <p className="mt-2 text-sm font-medium">No bookings yet</p>
               <p className="text-xs">
-                When clients provide their email on WhatsApp, booked demo calls will appear here.
+                Appointments confirmed on Google Calendar will appear here.
               </p>
             </div>
           ) : (

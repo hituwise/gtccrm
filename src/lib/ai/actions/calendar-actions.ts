@@ -82,6 +82,18 @@ export async function executeCheckAvailability(
     };
   }
 
+  // Check if AI booking permission is disabled in calendar settings
+  if (calConfig.auto_booking_enabled === false) {
+    return {
+      available: false,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      humanText: slot.humanText,
+      durationMinutes,
+      conflictReason: 'AI calendar booking permission is disabled in calendar settings',
+    };
+  }
+
   const check = await checkGoogleCalendarAvailability(calConfig, {
     startTime: slot.startTime,
     endTime: slot.endTime,
@@ -169,10 +181,19 @@ export async function executeBookAppointment(
 
   const resolvedConfig = productConfig || DEFAULT_PRODUCT_CONFIGS[productKey];
   const duration = resolvedConfig.durationMinutes;
-  const title = `${resolvedConfig.appointmentType}: ${customerName || 'Customer'}`;
+  const rawTitle = resolvedConfig.eventTitleTemplate || `{{name}} - ${resolvedConfig.appointmentType}`;
+  const title = rawTitle.replace(/\{\{name\}\}/g, customerName || 'Customer').replace(/\{name\}/g, customerName || 'Customer');
 
   try {
     const calConfig = await loadCalendarConfig(db, accountId);
+    if (calConfig && calConfig.auto_booking_enabled === false) {
+      return {
+        action: 'book_appointment',
+        success: false,
+        error: 'AI calendar booking permission is disabled in calendar settings',
+        booked: false,
+      };
+    }
     const tz = timezone || calConfig?.default_timezone || 'Asia/Kolkata';
 
     const bookingResult = await executeDemoBooking({

@@ -58,6 +58,7 @@ export interface ProductActionConfig {
   ctaType: 'Demo' | 'Call' | 'Demo/Call';
   teamName: string;
   assignedAgentId?: string | null;
+  eventTitleTemplate?: string;
 }
 
 export const APPROVED_PRODUCT_TAGS: Record<ProductKey, ProductTagName> = {
@@ -96,14 +97,16 @@ export const DEFAULT_PRODUCT_CONFIGS: Record<ProductKey, ProductActionConfig> = 
     durationMinutes: 45, // Confirmed 45m demo
     ctaType: 'Demo',
     teamName: 'Kids/Admissions',
+    eventTitleTemplate: '{{name}} - Abacus Demo',
   },
   GTC: {
     productKey: 'GTC',
     tagName: 'GTC_INTEREST',
-    appointmentType: 'Teacher Training Call',
+    appointmentType: 'GTC Training / Business Call',
     durationMinutes: 30,
     ctaType: 'Call',
     teamName: 'Teacher Training/Sales',
+    eventTitleTemplate: '{{name}} - GTC Training Call',
   },
   RUBIKS_CUBE: {
     productKey: 'RUBIKS_CUBE',
@@ -112,14 +115,16 @@ export const DEFAULT_PRODUCT_CONFIGS: Record<ProductKey, ProductActionConfig> = 
     durationMinutes: 45,
     ctaType: 'Demo',
     teamName: 'Kids Programs',
+    eventTitleTemplate: "{{name}} - Rubik's Cube Demo",
   },
   GOLD: {
     productKey: 'GOLD',
     tagName: 'GOLD_INTEREST',
-    appointmentType: 'Business Growth Call',
+    appointmentType: 'Gold Business Growth Call',
     durationMinutes: 45,
     ctaType: 'Call',
     teamName: 'Business Growth/Sales',
+    eventTitleTemplate: '{{name}} - Business Growth Call',
   },
   MAA: {
     productKey: 'MAA',
@@ -128,14 +133,16 @@ export const DEFAULT_PRODUCT_CONFIGS: Record<ProductKey, ProductActionConfig> = 
     durationMinutes: 30,
     ctaType: 'Demo',
     teamName: 'Academy Software/Product',
+    eventTitleTemplate: '{{name}} - MAA Product Demo',
   },
   LEAD_PILOT: {
     productKey: 'LEAD_PILOT',
     tagName: 'LEAD_PILOT_INTEREST',
-    appointmentType: 'Lead Pilot Demo/Call',
+    appointmentType: 'Lead Pilot Demo / Call',
     durationMinutes: 30,
     ctaType: 'Demo/Call',
     teamName: 'SaaS/Sales',
+    eventTitleTemplate: '{{name}} - Lead Pilot Demo',
   },
 };
 

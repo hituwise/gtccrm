@@ -322,6 +322,13 @@ export async function executeDemoBooking(
   // 2. Fetch Google Calendar Config
   const calConfig = await loadCalendarConfig(db, accountId);
 
+  if (bookedBy === 'ai' && calConfig && calConfig.auto_booking_enabled === false) {
+    return {
+      success: false,
+      error: 'AI booking permission is disabled in calendar settings',
+    };
+  }
+
   const durationMinutes =
     manualDuration || calConfig?.default_meeting_duration || 45;
   const timezone = calConfig?.default_timezone || 'Asia/Kolkata';

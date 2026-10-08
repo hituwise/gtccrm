@@ -44,6 +44,16 @@ export interface GoogleCalendarConfig {
   updated_at: string;
 }
 
+export interface ProductAppointmentTypeConfig {
+  productKey: string;
+  tagName: string;
+  appointmentType: string;
+  durationMinutes: number;
+  ctaType: string;
+  teamName: string;
+  eventTitleTemplate?: string;
+}
+
 export interface GoogleCalendarConfigSafe {
   configured: boolean;
   has_key?: boolean;
@@ -51,6 +61,7 @@ export interface GoogleCalendarConfigSafe {
   auth_type: CalendarAuthType;
   is_active: boolean;
   auto_booking_enabled: boolean;
+  allow_ai_booking?: boolean;
   default_meeting_title: string;
   default_meeting_duration: number;
   default_timezone: string;
@@ -59,6 +70,7 @@ export interface GoogleCalendarConfigSafe {
   buffer_between_meetings: number;
   confirmation_message_template: string;
   service_account_email?: string | null;
+  appointment_types?: ProductAppointmentTypeConfig[];
   updated_at?: string;
 }
 

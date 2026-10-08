@@ -7,6 +7,7 @@ import {
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit';
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption';
 import type { CalendarAuthType, ServiceAccountKey } from '@/types/calendar';
+import { DEFAULT_PRODUCT_CONFIGS, type ProductKey, type ProductActionConfig } from '@/lib/ai/actions/types';
 
 function bad(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
@@ -41,7 +42,36 @@ export async function GET() {
       );
     }
 
-    if (!data) return NextResponse.json({ configured: false });
+    // Fetch product configs from ai_configs to assemble full appointment types
+    const { data: aiConfigData } = await supabase
+      .from('ai_configs')
+      .select('product_configs')
+      .eq('account_id', accountId)
+      .maybeSingle();
+
+    const customProductConfigs = (aiConfigData?.product_configs || {}) as Record<string, Partial<ProductActionConfig>>;
+    const appointmentTypes = Object.entries(DEFAULT_PRODUCT_CONFIGS).map(([key, def]) => {
+      const custom = customProductConfigs[key] || {};
+      return {
+        productKey: key,
+        tagName: def.tagName,
+        appointmentType: custom.appointmentType || def.appointmentType,
+        durationMinutes: custom.durationMinutes || def.durationMinutes,
+        ctaType: custom.ctaType || def.ctaType,
+        teamName: custom.teamName || def.teamName,
+        eventTitleTemplate: custom.eventTitleTemplate || def.eventTitleTemplate || `{{name}} - ${def.appointmentType}`,
+      };
+    });
+
+    if (!data) {
+      return NextResponse.json({
+        configured: false,
+        default_timezone: 'Asia/Kolkata',
+        auto_booking_enabled: true,
+        allow_ai_booking: true,
+        appointment_types: appointmentTypes,
+      });
+    }
 
     let serviceAccountEmail: string | null = null;
     const hasKey = Boolean(data.service_account_key || data.oauth_credentials);
@@ -66,6 +96,9 @@ export async function GET() {
       configured: true,
       has_key: hasKey,
       service_account_email: serviceAccountEmail,
+      allow_ai_booking: data.auto_booking_enabled !== false,
+      default_timezone: data.default_timezone || 'Asia/Kolkata',
+      appointment_types: appointmentTypes,
       ...safe,
     });
   } catch (err) {
@@ -99,7 +132,11 @@ export async function POST(request: Request) {
       : 'primary';
 
     const isActive = body.is_active === true;
-    const autoBookingEnabled = body.auto_booking_enabled !== false;
+    const autoBookingEnabled =
+      body.allow_ai_booking !== undefined
+        ? body.allow_ai_booking === true
+        : body.auto_booking_enabled !== false;
+
     const defaultMeetingTitle =
       typeof body.default_meeting_title === 'string' && body.default_meeting_title.trim()
         ? body.default_meeting_title.trim()
@@ -107,13 +144,13 @@ export async function POST(request: Request) {
 
     let defaultMeetingDuration = Number(body.default_meeting_duration);
     if (!Number.isFinite(defaultMeetingDuration) || defaultMeetingDuration < 5) {
-      defaultMeetingDuration = 30;
+      defaultMeetingDuration = 45;
     }
 
     const defaultTimezone =
       typeof body.default_timezone === 'string' && body.default_timezone.trim()
         ? body.default_timezone.trim()
-        : 'UTC';
+        : 'Asia/Kolkata';
 
     const workingHoursStart =
       typeof body.working_hours_start === 'string' && body.working_hours_start.trim()
@@ -132,6 +169,45 @@ export async function POST(request: Request) {
       typeof body.confirmation_message_template === 'string'
         ? body.confirmation_message_template.trim()
         : null;
+
+    // Handle product-specific appointment types if provided
+    if (Array.isArray(body.appointment_types) || (typeof body.product_configs === 'object' && body.product_configs !== null)) {
+      const productConfigsToStore: Record<string, ProductActionConfig> = {};
+      if (Array.isArray(body.appointment_types)) {
+        for (const item of body.appointment_types) {
+          if (item && item.productKey) {
+            const def = DEFAULT_PRODUCT_CONFIGS[item.productKey as ProductKey];
+            productConfigsToStore[item.productKey] = {
+              productKey: item.productKey,
+              tagName: item.tagName || def?.tagName || 'INTERESTED',
+              appointmentType: item.appointmentType || def?.appointmentType || 'Demo',
+              durationMinutes: Number(item.durationMinutes) || def?.durationMinutes || 45,
+              ctaType: item.ctaType || def?.ctaType || 'Demo',
+              teamName: item.teamName || def?.teamName || 'Admissions',
+              eventTitleTemplate: item.eventTitleTemplate || def?.eventTitleTemplate || `{{name}} - ${item.appointmentType}`,
+            };
+          }
+        }
+      } else {
+        Object.assign(productConfigsToStore, body.product_configs);
+      }
+
+      const { data: existingAiConfig } = await supabase
+        .from('ai_configs')
+        .select('account_id, product_configs')
+        .eq('account_id', accountId)
+        .maybeSingle();
+
+      if (existingAiConfig) {
+        await supabase
+          .from('ai_configs')
+          .update({
+            product_configs: productConfigsToStore,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('account_id', accountId);
+      }
+    }
 
     // Fetch existing row to preserve existing credentials if not re-provided
     const { data: existing } = await supabase
