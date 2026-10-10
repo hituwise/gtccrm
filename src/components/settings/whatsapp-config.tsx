@@ -186,6 +186,14 @@ export function WhatsAppConfig() {
       if (data) {
         try {
           const res = await fetch('/api/whatsapp/config', { method: 'GET' });
+          if (!res.ok) {
+            console.warn(`WhatsApp health check returned HTTP ${res.status}`);
+            if (data.status === 'connected') {
+              setConnectionStatus('connected');
+              setResetReason(null);
+            }
+            return;
+          }
           const payload = await res.json();
 
           if (payload.connected) {
@@ -203,7 +211,11 @@ export function WhatsAppConfig() {
           }
         } catch (err) {
           console.error('Health check failed:', err);
-          setConnectionStatus('disconnected');
+          if (data.status === 'connected') {
+            setConnectionStatus('connected');
+          } else {
+            setConnectionStatus('disconnected');
+          }
         }
       } else {
         setConnectionStatus('disconnected');

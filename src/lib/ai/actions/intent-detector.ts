@@ -4,6 +4,8 @@ import {
   type StageTagName,
   type ScoringSignal,
   type LeadTemperature,
+  type TenantProductConfig,
+  GENIPLUS_SEED_PRODUCTS,
 } from './types';
 import {
   hasDateSpecified,
@@ -13,10 +15,163 @@ import {
 import { extractEmailFromText } from '@/lib/calendar/booking-coordinator';
 import type { ChatMessage } from '@/lib/ai/types';
 
+export interface ProductDetectionResult {
+  products: ProductKey[];
+  matchingConfigs: TenantProductConfig[];
+  isAmbiguous: boolean;
+  clarifyingQuestion?: string;
+}
+
+/**
+ * Normalizes text for matching by lowercasing and trimming punctuation.
+ */
+function cleanText(text: string): string {
+  return text.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()?]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Calculates a match score for a given product config against user text.
+ */
+export function scoreProductMatch(text: string, product: TenantProductConfig): number {
+  if (product.enabled === false) return 0;
+
+  const lower = text.toLowerCase();
+  const cleaned = ` ${cleanText(text)} `;
+  let score = 0;
+
+  // 1. Check explicit keywords
+  if (Array.isArray(product.keywords) && product.keywords.length > 0) {
+    for (const kw of product.keywords) {
+      const kwLower = kw.toLowerCase().trim();
+      if (!kwLower) continue;
+      if (lower.includes(kwLower)) {
+        score += kwLower.includes(' ') ? 40 : 25;
+      }
+    }
+  }
+
+  // 2. Check product name
+  const nameLower = product.name.toLowerCase();
+  if (lower.includes(nameLower)) {
+    score += 50;
+  } else {
+    // Individual words of product name
+    const nameWords = cleanText(product.name).split(' ').filter((w) => w.length > 3);
+    for (const w of nameWords) {
+      if (cleaned.includes(` ${w} `)) {
+        score += 15;
+      }
+    }
+  }
+
+  // 3. Check appointment type
+  const apptLower = product.appointmentType.toLowerCase();
+  if (lower.includes(apptLower)) {
+    score += 45;
+  }
+
+  // 4. Check description & category
+  if (product.description) {
+    const descLower = product.description.toLowerCase();
+    // Common intent phrases in description (e.g. "more clients", "personal training", "brain development")
+    const descPhrases = descLower.split(/[,.;]/).map((p) => p.trim()).filter((p) => p.length > 5);
+    for (const phrase of descPhrases) {
+      if (lower.includes(phrase)) {
+        score += 30;
+      }
+    }
+
+    const descWords = cleanText(product.description).split(' ').filter((w) => w.length > 4);
+    for (const w of descWords) {
+      if (cleaned.includes(` ${w} `)) {
+        score += 8;
+      }
+    }
+  }
+
+  if (product.category && lower.includes(product.category.toLowerCase())) {
+    score += 20;
+  }
+
+  // 5. Product Key / ID exact match
+  const keyLower = product.productServiceId.toLowerCase().replace(/[_-]/g, ' ');
+  if (cleaned.includes(` ${keyLower} `)) {
+    score += 35;
+  }
+
+  return score;
+}
+
+/**
+ * Dynamically detects product intent using the tenant's configured catalogue.
+ * If ambiguous between multiple products, returns clarifying question.
+ */
+export function detectTenantProductIntent(
+  text: string,
+  catalogue: TenantProductConfig[],
+): ProductDetectionResult {
+  if (!catalogue || catalogue.length === 0) {
+    return {
+      products: [],
+      matchingConfigs: [],
+      isAmbiguous: false,
+    };
+  }
+
+  const scored = catalogue
+    .map((prod) => ({
+      product: prod,
+      score: scoreProductMatch(text, prod),
+    }))
+    .filter((item) => item.score >= 20)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) {
+    return {
+      products: [],
+      matchingConfigs: [],
+      isAmbiguous: false,
+    };
+  }
+
+  const topScore = scored[0].score;
+  const topMatches = scored.filter((item) => item.score >= topScore * 0.75);
+
+  // If two distinct products have almost identical high score, flag ambiguity
+  if (topMatches.length >= 2 && topMatches[0].product.productServiceId !== topMatches[1].product.productServiceId) {
+    const p1 = topMatches[0].product.name;
+    const p2 = topMatches[1].product.name;
+    return {
+      products: topMatches.map((m) => m.product.productServiceId),
+      matchingConfigs: topMatches.map((m) => m.product),
+      isAmbiguous: true,
+      clarifyingQuestion: `We offer both ${p1} and ${p2}. Which one would you like to explore?`,
+    };
+  }
+
+  return {
+    products: [scored[0].product.productServiceId],
+    matchingConfigs: [scored[0].product],
+    isAmbiguous: false,
+  };
+}
+
 /**
  * Detects product intent from current message and recent conversation turns.
+ * Supports dynamic tenant catalogue while maintaining 100% backward compatibility
+ * when no catalogue is passed (falls back to Geniplus seed rules).
  */
-export function detectProductIntent(text: string): ProductKey[] {
+export function detectProductIntent(
+  text: string,
+  catalogue?: TenantProductConfig[],
+): ProductKey[] {
+  // If a tenant catalogue is supplied (even if empty for a new coach), use dynamic tenant matching!
+  if (catalogue !== undefined) {
+    const res = detectTenantProductIntent(text, catalogue);
+    return res.products;
+  }
+
+  // FALLBACK FOR LEGACY CALLS WITHOUT CATALOGUE (e.g. Geniplus default tests):
   const lower = text.toLowerCase();
   const detected: ProductKey[] = [];
 
@@ -135,7 +290,7 @@ export function extractCustomerName(
   // 1. Explicit declaration: "My name is Hitendra", "I am Hitendra", "Name: Hitendra", "This is Hitendra", "Hitendra here"
   const m1 = trimmed.match(/(?:my name is|i am|i'm|name is|this is|call me|name:?)\s+([A-Za-z\s.'-]{2,30})/i);
   if (m1) {
-    const raw = m1[1].trim();
+    const raw = m1[1].replace(/[.,!?;:]+$/, '').trim();
     if (!/^(?:a|the|an|ready|interested|booking|demo|call)$/i.test(raw)) {
       return { name: raw, isExplicit: true };
     }
@@ -160,7 +315,7 @@ export function extractCustomerName(
       !/\b(?:am|pm|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(lower) &&
       /^[A-Za-z\s.'-]{2,40}$/.test(trimmed)
     ) {
-      return { name: trimmed, isExplicit: true };
+      return { name: trimmed.replace(/[.,!?;:]+$/, '').trim(), isExplicit: true };
     }
   }
 
@@ -168,7 +323,7 @@ export function extractCustomerName(
   for (const m of messages.filter((msg) => msg.role === 'user')) {
     const histMatch = m.content.match(/(?:my name is|i am|i'm|name is|this is|call me|name:?)\s+([A-Za-z\s.'-]{2,30})/i);
     if (histMatch) {
-      const raw = histMatch[1].trim();
+      const raw = histMatch[1].replace(/[.,!?;:]+$/, '').trim();
       if (!/^(?:a|the|an|ready|interested|booking|demo|call)$/i.test(raw)) {
         return { name: raw, isExplicit: true };
       }
@@ -209,12 +364,13 @@ export function extractCustomerName(
  */
 export function analyzeCustomerIntent(args: {
   currentText: string;
-  messages: ChatMessage[];
+  messages?: ChatMessage[];
   existingTags?: string[];
   contactEmail?: string | null;
   referenceDate?: Date;
+  catalogue?: TenantProductConfig[];
 }): DetectedIntents {
-  const { currentText, messages, contactEmail } = args;
+  const { currentText, messages = [], contactEmail, catalogue } = args;
   const lower = currentText.toLowerCase();
 
   // Combine recent customer texts for context
@@ -227,11 +383,34 @@ export function analyzeCustomerIntent(args: {
   // Extract customer name
   const { name: customerName, isExplicit: explicitNameProvided } = extractCustomerName(currentText, messages);
 
-  // 1. Detect products
-  const products = detectProductIntent(currentText);
-  if (products.length === 0) {
-    const historicalProducts = detectProductIntent(customerHistory);
-    products.push(...historicalProducts);
+  // 1. Detect products dynamically using tenant catalogue if available
+  let products: ProductKey[] = [];
+  let matchingConfigs: TenantProductConfig[] = [];
+  let isAmbiguousProduct = false;
+  let clarifyingQuestion: string | undefined = undefined;
+
+  if (catalogue && catalogue.length > 0) {
+    const det = detectTenantProductIntent(currentText, catalogue);
+    products = det.products;
+    matchingConfigs = det.matchingConfigs;
+    isAmbiguousProduct = det.isAmbiguous;
+    clarifyingQuestion = det.clarifyingQuestion;
+
+    if (products.length === 0 && customerHistory) {
+      const histDet = detectTenantProductIntent(customerHistory, catalogue);
+      products = histDet.products;
+      matchingConfigs = histDet.matchingConfigs;
+      if (!isAmbiguousProduct && histDet.isAmbiguous) {
+        isAmbiguousProduct = true;
+        clarifyingQuestion = histDet.clarifyingQuestion;
+      }
+    }
+  } else {
+    products = detectProductIntent(currentText);
+    if (products.length === 0 && customerHistory) {
+      const historicalProducts = detectProductIntent(customerHistory);
+      products.push(...historicalProducts);
+    }
   }
 
   // 2. Identify signals & stage tags
@@ -246,8 +425,17 @@ export function analyzeCustomerIntent(args: {
   // Human handoff
   const isHumanHandoffRequested =
     lower.includes('speak to a person') ||
+    lower.includes('talk to a person') ||
     lower.includes('talk to a human') ||
+    lower.includes('speak to a human') ||
     lower.includes('speak to human') ||
+    lower.includes('human coach') ||
+    lower.includes('speak to coach') ||
+    lower.includes('talk to coach') ||
+    lower.includes('speak to a coach') ||
+    lower.includes('talk to a coach') ||
+    lower.includes('speak to someone') ||
+    lower.includes('talk to someone') ||
     lower.includes('talk to an agent') ||
     lower.includes('speak to agent') ||
     lower.includes('real person') ||
@@ -314,7 +502,11 @@ export function analyzeCustomerIntent(args: {
     lower.includes('schedule a call') ||
     lower.includes('talk on call') ||
     lower.includes('request a call') ||
-    lower.includes('call me');
+    lower.includes('call me') ||
+    /book\s+(?:a|an)?\s*(?:intro|discovery|strategy)?\s*call/.test(lower) ||
+    /schedule\s+(?:a|an)?\s*(?:intro|discovery|strategy)?\s*(?:call|appointment|session)/.test(lower) ||
+    lower.includes('self-scheduling') ||
+    lower.includes('booking page');
   if (requestsCall) {
     signals.push('requests_demo_or_call');
     stageTagsToAdd.push('CALL_REQUESTED');
@@ -454,9 +646,16 @@ export function analyzeCustomerIntent(args: {
     (dateSpecified || timeSpecified);
 
   // Derive customer type and pain point
-  let customerType = 'Parent / Customer';
+  let customerType = 'Customer';
   let painPoint = '';
 
+  if (matchingConfigs.length > 0) {
+    const top = matchingConfigs[0];
+    customerType = top.category ? `${top.category} Client` : 'Client';
+    painPoint = top.description || top.appointmentType || top.name;
+  }
+
+  // Backward compatibility overrides for Geniplus programs
   if (products.includes('ABACUS_KIDS')) {
     customerType = 'Parent';
     painPoint = childAge ? `Abacus mental math classes for ${childAge}-year-old child` : 'Abacus classes for child';
@@ -479,6 +678,9 @@ export function analyzeCustomerIntent(args: {
 
   return {
     products,
+    matchingConfigs,
+    isAmbiguousProduct,
+    clarifyingQuestion,
     stageTagsToAdd,
     signals,
     temperature,

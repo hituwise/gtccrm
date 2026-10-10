@@ -70,15 +70,20 @@ export async function POST(request: Request) {
       startTime,
       title,
       durationMinutes,
+      productServiceId,
+      meetingMode,
+      meetingLink,
       sendConfirmation = true,
     } = body;
 
     if (!contactId) {
       return NextResponse.json({ error: 'contactId is required' }, { status: 400 });
     }
-    if (!email || typeof email !== 'string' || !email.includes('@')) {
-      return NextResponse.json({ error: 'A valid email address is required' }, { status: 400 });
+    if (email && (typeof email !== 'string' || !email.includes('@'))) {
+      return NextResponse.json({ error: 'A valid email address is required when email is provided' }, { status: 400 });
     }
+
+    const cleanEmail = email && typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : null;
 
     const result = await executeDemoBooking({
       db: supabase,
@@ -86,7 +91,10 @@ export async function POST(request: Request) {
       contactId,
       conversationId,
       configOwnerUserId: userId,
-      email: email.trim().toLowerCase(),
+      email: cleanEmail,
+      productServiceId,
+      meetingMode,
+      staticMeetingLink: meetingLink,
       preferredTimeText: startTime,
       bookedBy: 'agent',
       manualTitle: title,

@@ -107,6 +107,7 @@ export async function testGoogleCalendarConnection(
   summary?: string;
   timeZone?: string;
   serviceAccountEmail?: string;
+  oauthEmail?: string;
   error?: string;
 }> {
   try {
@@ -118,10 +119,18 @@ export async function testGoogleCalendarConnection(
     });
 
     let serviceAccountEmail: string | undefined;
+    let oauthEmail: string | undefined;
     if (config.auth_type === 'service_account' && config.service_account_key) {
       try {
         const key = parseKeyPayload<ServiceAccountKey>(config.service_account_key);
         serviceAccountEmail = key.client_email;
+      } catch {
+        // ignore
+      }
+    } else if (config.auth_type === 'oauth' && config.oauth_credentials) {
+      try {
+        const creds = parseKeyPayload<OAuthCredentials>(config.oauth_credentials);
+        oauthEmail = creds.email;
       } catch {
         // ignore
       }
@@ -133,6 +142,7 @@ export async function testGoogleCalendarConnection(
       summary: res.data.summary || 'Connected Google Calendar',
       timeZone: res.data.timeZone || 'UTC',
       serviceAccountEmail,
+      oauthEmail,
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -141,6 +151,26 @@ export async function testGoogleCalendarConnection(
       success: false,
       error: message,
     };
+  }
+}
+
+/**
+ * Lists calendars accessible by the authenticated Google account.
+ */
+export async function getGoogleCalendarList(
+  config: Pick<GoogleCalendarConfig, 'auth_type' | 'service_account_key' | 'oauth_credentials'>,
+): Promise<Array<{ id: string; summary: string; primary?: boolean }>> {
+  try {
+    const calendar = await getGoogleCalendarClient(config);
+    const res = await calendar.calendarList.list();
+    return (res.data.items || []).map((c: { id?: string | null; summary?: string | null; primary?: boolean | null }) => ({
+      id: c.id || 'primary',
+      summary: c.summary || c.id || 'Calendar',
+      primary: Boolean(c.primary),
+    }));
+  } catch (err) {
+    console.warn('[google-calendar] getGoogleCalendarList error:', err);
+    return [{ id: 'primary', summary: 'Primary Calendar', primary: true }];
   }
 }
 

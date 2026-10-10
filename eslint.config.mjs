@@ -15,6 +15,12 @@ const eslintConfig = defineConfig([
     // Vendored minified opus-recorder encoder worker (served statically).
     "public/opus/**",
   ]),
+  {
+    files: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

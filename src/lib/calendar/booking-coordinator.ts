@@ -12,6 +12,7 @@ import {
 } from './google-calendar';
 import { parseBookingSlot, formatBookingDateTime } from './date-parser';
 import { engineSendText } from '@/lib/flows/meta-send';
+import type { MeetingLinkMode, TenantProductConfig } from '@/lib/ai/actions/types';
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
 
@@ -113,21 +114,40 @@ export function formatConfirmationMessage(
   template: string | null | undefined,
   params: {
     name: string;
-    email: string;
+    email?: string | null;
     dateTime: string;
     meetLink?: string | null;
     title: string;
     duration?: number;
+    meetingMode?: MeetingLinkMode;
   },
 ): string {
   const hasRealMeetLink = Boolean(params.meetLink && params.meetLink.startsWith('http'));
+  const hasEmail = Boolean(params.email && params.email.includes('@'));
+  const mode = params.meetingMode || (hasRealMeetLink ? 'GOOGLE_MEET' : 'NONE');
 
-  const defaultTemplate =
+  let defaultTemplate =
     `Perfect 😊 Your {{title}} is booked!\n\n` +
     `📅 {{date_time}}\n` +
-    `⏱️ {{duration}} minutes\n` +
-    (hasRealMeetLink ? `💻 Google Meet: {{meet_link}}\n` : '') +
-    `\nSee you there! 🎉`;
+    `⏱️ {{duration}} minutes\n`;
+
+  if (mode === 'GOOGLE_MEET' && hasRealMeetLink) {
+    defaultTemplate += `💻 Google Meet: {{meet_link}}\n`;
+  } else if (mode === 'ZOOM' && hasRealMeetLink) {
+    defaultTemplate += `📹 Zoom: {{meet_link}}\n`;
+  } else if (mode === 'STATIC_MEETING_LINK' && hasRealMeetLink) {
+    defaultTemplate += `🔗 Meeting Link: {{meet_link}}\n`;
+  } else if (mode === 'BOOKING_PAGE' && hasRealMeetLink) {
+    defaultTemplate += `📅 Booking Link: {{meet_link}}\n`;
+  } else if (mode === 'NONE' || mode === 'MANUAL_FOLLOW_UP' || !hasRealMeetLink) {
+    defaultTemplate += `📞 We will call you directly for the session.\n`;
+  }
+
+  if (hasEmail) {
+    defaultTemplate += `📧 Calendar invite sent to: {{email}}\n`;
+  }
+
+  defaultTemplate += `\nSee you there! 🎉`;
 
   let rendered = template && template.trim() ? template : defaultTemplate;
 
@@ -136,14 +156,21 @@ export function formatConfirmationMessage(
     rendered = rendered
       .replace(/^[^\n]*\{\{meet_link\}\}[^\n]*\n?/gm, '')
       .replace(/^[^\n]*Google Meet[^\n]*\n?/gim, '')
+      .replace(/^[^\n]*Zoom[^\n]*\n?/gim, '');
+  }
+
+  // If no email or template has invite sent to email, clean up
+  if (!hasEmail) {
+    rendered = rendered
+      .replace(/^[^\n]*\{\{email\}\}[^\n]*\n?/gm, '')
       .replace(/^[^\n]*Calendar invite sent to[^\n]*\n?/gim, '');
   }
 
   rendered = rendered
     .replace(/\{\{name\}\}/g, params.name || 'there')
     .replace(/\{name\}/g, params.name || 'there')
-    .replace(/\{\{email\}\}/g, params.email)
-    .replace(/\{email\}/g, params.email)
+    .replace(/\{\{email\}\}/g, params.email || '')
+    .replace(/\{email\}/g, params.email || '')
     .replace(/\{\{date_time\}\}/g, params.dateTime)
     .replace(/\{date_time\}/g, params.dateTime)
     .replace(/\{\{duration\}\}/g, String(params.duration || 45))
@@ -161,7 +188,7 @@ export interface ExecuteBookingArgs {
   contactId: string;
   conversationId?: string;
   configOwnerUserId?: string;
-  email: string;
+  email?: string | null;
   customerName?: string;
   childAge?: number | null;
   preferredTimeText?: string;
@@ -169,6 +196,11 @@ export interface ExecuteBookingArgs {
   manualTitle?: string;
   manualDuration?: number;
   sendWhatsAppConfirmation?: boolean;
+  productConfig?: TenantProductConfig;
+  productServiceId?: string;
+  meetingMode?: MeetingLinkMode;
+  staticMeetingLink?: string | null;
+  timezone?: string;
 }
 
 /**
@@ -307,6 +339,11 @@ export async function executeDemoBooking(
     manualTitle,
     manualDuration,
     sendWhatsAppConfirmation = true,
+    productConfig,
+    productServiceId,
+    meetingMode: explicitMeetingMode,
+    staticMeetingLink: explicitStaticLink,
+    timezone: explicitTimezone,
   } = args;
 
   // 1. Fetch contact info
@@ -318,6 +355,7 @@ export async function executeDemoBooking(
 
   const contactName = args.customerName || contact?.name || 'Customer';
   const contactPhone = contact?.phone || '';
+  const effectiveEmail = email || contact?.email || null;
 
   // 2. Fetch Google Calendar Config
   const calConfig = await loadCalendarConfig(db, accountId);
@@ -329,11 +367,34 @@ export async function executeDemoBooking(
     };
   }
 
-  const durationMinutes =
-    manualDuration || calConfig?.default_meeting_duration || 45;
-  const timezone = calConfig?.default_timezone || 'Asia/Kolkata';
+  // 3. Resolve Meeting Mode & Settings
+  const meetingMode: MeetingLinkMode =
+    explicitMeetingMode || productConfig?.meetingMode || 'GOOGLE_MEET';
 
-  let titleBase = manualTitle || calConfig?.default_meeting_title || 'LeadPilot Demo Call: {{name}}';
+  // If self-scheduling BOOKING_PAGE mode: return booking page URL without claiming a verified booking exists!
+  if (meetingMode === 'BOOKING_PAGE') {
+    const pageUrl = productConfig?.meetingLink || explicitStaticLink || '';
+    const bookingPageMsg = pageUrl
+      ? `You can choose a convenient slot and complete your booking directly on our calendar page here:\n🔗 ${pageUrl}`
+      : `Please visit our booking page to select your preferred appointment slot.`;
+    return {
+      success: true,
+      meetLink: pageUrl || null,
+      confirmationMessage: bookingPageMsg,
+    };
+  }
+
+  const durationMinutes =
+    manualDuration || productConfig?.durationMinutes || calConfig?.default_meeting_duration || 45;
+  const timezone =
+    explicitTimezone || productConfig?.timezone || calConfig?.default_timezone || 'Asia/Kolkata';
+
+  let titleBase =
+    manualTitle ||
+    productConfig?.eventTitleTemplate ||
+    calConfig?.default_meeting_title ||
+    'LeadPilot Demo Call: {{name}}';
+
   if (titleBase.includes('{{name}}') || titleBase.includes('{name}')) {
     titleBase = titleBase.replace(/\{\{name\}\}/g, contactName).replace(/\{name\}/g, contactName);
   } else if (!manualTitle) {
@@ -341,7 +402,7 @@ export async function executeDemoBooking(
   }
   const meetingTitle = titleBase;
 
-  // 3. Parse booking slot in target timezone
+  // 4. Parse booking slot in target timezone
   const slot = parseBookingSlot(
     preferredTimeText || 'tomorrow 11am',
     durationMinutes,
@@ -354,109 +415,180 @@ export async function executeDemoBooking(
   let googleEventId: string | null = null;
   let htmlLink: string | null = null;
 
-  // 4. Create event on Google Calendar if credentials exist
-  const hasCredentials = Boolean(
+  // 5. Provider Execution according to meetingMode
+  const hasCalendarCredentials = Boolean(
     calConfig?.is_active &&
     (calConfig.service_account_key || calConfig.oauth_credentials)
   );
 
-  if (!hasCredentials) {
-    console.warn('[booking-coordinator] No active Google Calendar configured for account:', accountId);
-    return {
-      success: false,
-      error: 'no_calendar_configured',
-      readableDateTime: formatBookingDateTime(slot.startTime, timezone),
-    };
+  if (meetingMode === 'GOOGLE_MEET') {
+    if (!hasCalendarCredentials) {
+      console.warn('[booking-coordinator] No active Google Calendar configured for account:', accountId);
+      return {
+        success: false,
+        error: 'no_calendar_configured',
+        readableDateTime: formatBookingDateTime(slot.startTime, timezone),
+      };
+    }
+
+    try {
+      googleResult = await createGoogleCalendarBooking(calConfig!, {
+        title: meetingTitle,
+        description: `Demo Call booked via LeadPilot WhatsApp CRM.\nContact: ${contactName}\nPhone: ${contactPhone}${effectiveEmail ? `\nEmail: ${effectiveEmail}` : ''}`,
+        attendeeEmail: effectiveEmail || '',
+        attendeeName: contactName,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        timezone,
+      });
+
+      googleEventId = googleResult.eventId;
+      meetLink = googleResult.meetLink;
+      htmlLink = googleResult.htmlLink;
+    } catch (gErr: unknown) {
+      const errMessage = gErr instanceof Error ? gErr.message : String(gErr);
+      console.error('[booking-coordinator] Google Calendar API error:', errMessage);
+      return {
+        success: false,
+        error: errMessage,
+        readableDateTime: formatBookingDateTime(slot.startTime, timezone),
+      };
+    }
+
+    if (!googleEventId) {
+      return {
+        success: false,
+        error: 'google_event_id_missing',
+        readableDateTime: formatBookingDateTime(slot.startTime, timezone),
+      };
+    }
+
+    if (!meetLink) {
+      meetLink = effectiveEmail ? 'Google Calendar invite sent to email' : null;
+    }
+  } else if (meetingMode === 'ZOOM') {
+    meetLink = explicitStaticLink || productConfig?.meetingLink || null;
+    if (hasCalendarCredentials) {
+      try {
+        googleResult = await createGoogleCalendarBooking(calConfig!, {
+          title: meetingTitle,
+          description: `Zoom Call booked via LeadPilot WhatsApp CRM.\nContact: ${contactName}\nPhone: ${contactPhone}${meetLink ? `\nZoom: ${meetLink}` : ''}`,
+          attendeeEmail: effectiveEmail || '',
+          attendeeName: contactName,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          timezone,
+        });
+        googleEventId = googleResult.eventId;
+        htmlLink = googleResult.htmlLink;
+      } catch (err) {
+        console.warn('[booking-coordinator] Zoom mode calendar sync error (non-fatal):', err);
+      }
+    }
+  } else if (meetingMode === 'STATIC_MEETING_LINK') {
+    meetLink = explicitStaticLink || productConfig?.meetingLink || null;
+    if (hasCalendarCredentials) {
+      try {
+        googleResult = await createGoogleCalendarBooking(calConfig!, {
+          title: meetingTitle,
+          description: `Call booked via LeadPilot WhatsApp CRM.\nContact: ${contactName}\nPhone: ${contactPhone}${meetLink ? `\nMeeting Link: ${meetLink}` : ''}`,
+          attendeeEmail: effectiveEmail || '',
+          attendeeName: contactName,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          timezone,
+        });
+        googleEventId = googleResult.eventId;
+        htmlLink = googleResult.htmlLink;
+      } catch (err) {
+        console.warn('[booking-coordinator] Static link calendar sync error (non-fatal):', err);
+      }
+    }
+  } else {
+    // NONE or MANUAL_FOLLOW_UP (in-person or phone call)
+    meetLink = null;
+    if (hasCalendarCredentials) {
+      try {
+        googleResult = await createGoogleCalendarBooking(calConfig!, {
+          title: meetingTitle,
+          description: `Appointment booked via LeadPilot WhatsApp CRM.\nContact: ${contactName}\nPhone: ${contactPhone}\nMode: Direct phone / in-person`,
+          attendeeEmail: effectiveEmail || '',
+          attendeeName: contactName,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          timezone,
+        });
+        googleEventId = googleResult.eventId;
+        htmlLink = googleResult.htmlLink;
+      } catch (err) {
+        console.warn('[booking-coordinator] Phone/In-person calendar sync error (non-fatal):', err);
+      }
+    }
   }
 
-  try {
-    googleResult = await createGoogleCalendarBooking(calConfig!, {
-      title: meetingTitle,
-      description: `Demo Call booked via LeadPilot WhatsApp CRM.\nContact: ${contactName}\nPhone: ${contactPhone}\nEmail: ${email}`,
-      attendeeEmail: email,
-      attendeeName: contactName,
-      startTime: slot.startTime,
-      endTime: slot.endTime,
-      timezone,
-    });
-
-    googleEventId = googleResult.eventId;
-    meetLink = googleResult.meetLink;
-    htmlLink = googleResult.htmlLink;
-  } catch (gErr: unknown) {
-    const errMessage = gErr instanceof Error ? gErr.message : String(gErr);
-    console.error('[booking-coordinator] Google Calendar API error:', errMessage);
-
-    // GOLDEN RULE: Never fake a booking! If Google Calendar API fails, return controlled failure.
-    return {
-      success: false,
-      error: errMessage,
-      readableDateTime: formatBookingDateTime(slot.startTime, timezone),
-    };
-  }
-
-  if (!googleEventId) {
-    return {
-      success: false,
-      error: 'google_event_id_missing',
-      readableDateTime: formatBookingDateTime(slot.startTime, timezone),
-    };
-  }
-
-  // If no meet link was returned, provide default meeting note
-  if (!meetLink) {
-    meetLink = 'Google Calendar invite sent to email';
-  }
-
-  // 5. Update contact email if empty or changed
-  if (contact && (!contact.email || contact.email !== email)) {
+  // 6. Update contact email if provided and changed
+  if (effectiveEmail && contact && (!contact.email || contact.email !== effectiveEmail)) {
     await db
       .from('contacts')
-      .update({ email, updated_at: new Date().toISOString() })
+      .update({ email: effectiveEmail, updated_at: new Date().toISOString() })
       .eq('id', contactId);
   }
 
-  // 6. Format human readable date & time and confirmation message
+  // 7. Format human readable date & time and confirmation message
   const readableDateTime = formatBookingDateTime(slot.startTime, timezone);
+  const confirmationTemplate =
+    productConfig?.confirmationTemplate || calConfig?.confirmation_message_template;
+
+  const actualEffectiveMeetingMode: MeetingLinkMode =
+    meetingMode === 'GOOGLE_MEET' && !meetLink ? 'NONE' : meetingMode;
+
   const confirmationMessage = formatConfirmationMessage(
-    calConfig?.confirmation_message_template,
+    confirmationTemplate,
     {
       name: contactName,
-      email,
+      email: effectiveEmail,
       dateTime: readableDateTime,
       meetLink,
       title: meetingTitle,
+      duration: durationMinutes,
+      meetingMode: actualEffectiveMeetingMode,
     },
   );
 
-  // 7. Save booking in DB ONLY AFTER external calendar creation succeeded
+  // 8. Save booking in DB
   const bookingData = {
     account_id: accountId,
     contact_id: contactId,
     conversation_id: conversationId || null,
     booked_by: bookedBy,
-    google_event_id: googleEventId,
+    google_event_id: googleEventId || (meetingMode !== 'GOOGLE_MEET' ? `internal-${Date.now()}` : null),
     google_calendar_id: calConfig?.calendar_id || 'primary',
     title: meetingTitle,
     description: `Booked via LeadPilot WhatsApp CRM for ${contactName}`,
-    attendee_email: email,
+    attendee_email: effectiveEmail || '',
     attendee_name: contactName,
     attendee_phone: contactPhone,
-    start_time: googleResult.startTime || slot.startTime,
-    end_time: googleResult.endTime || slot.endTime,
+    start_time: googleResult?.startTime || slot.startTime,
+    end_time: googleResult?.endTime || slot.endTime,
     timezone,
     meet_link: meetLink,
     html_link: htmlLink,
-    status: 'confirmed',
+    status: 'confirmed' as const,
     confirmation_sent: false,
+    product_service_id: productConfig?.productServiceId || productServiceId || null,
+    meeting_mode: actualEffectiveMeetingMode,
     metadata: {
       preferred_time_input: preferredTimeText || null,
-      google_calendar_synced: true,
+      google_calendar_synced: Boolean(googleEventId),
       external_event_id: googleEventId,
+      product_service_id: productConfig?.productServiceId || productServiceId || null,
+      meeting_mode: actualEffectiveMeetingMode,
+      meet_link_generated: Boolean(meetLink),
     },
   };
 
-  const { data: insertedBooking, error: bookingErr } = await db
+  let insertedBooking: CalendarBooking | null = null;
+  const { data: inserted, error: bookingErr } = await db
     .from('calendar_bookings')
     .insert(bookingData)
     .select()
@@ -464,16 +596,41 @@ export async function executeDemoBooking(
 
   if (bookingErr) {
     console.error('[booking-coordinator] failed to insert booking:', bookingErr);
+    // If table schema cache does not yet have meeting_mode or product_service_id (pre-migration 048)
+    if (
+      bookingErr.code === 'PGRST204' ||
+      bookingErr.message?.includes('meeting_mode') ||
+      bookingErr.message?.includes('product_service_id')
+    ) {
+      console.log('[booking-coordinator] Retrying insert with baseline schema compatibility...');
+      const fallbackBookingData = { ...bookingData } as Record<string, unknown>;
+      delete fallbackBookingData.meeting_mode;
+      delete fallbackBookingData.product_service_id;
+      const { data: fallbackInserted, error: fallbackErr } = await db
+        .from('calendar_bookings')
+        .insert(fallbackBookingData)
+        .select()
+        .single();
+      if (!fallbackErr && fallbackInserted) {
+        insertedBooking = fallbackInserted as CalendarBooking;
+      }
+    }
+  } else if (inserted) {
+    insertedBooking = inserted as CalendarBooking;
   }
 
-  const finalBooking = (insertedBooking || {
-    id: `temp-${Date.now()}`,
-    ...bookingData,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }) as CalendarBooking;
+  if (!insertedBooking) {
+    console.error('[booking-coordinator] Failed to persist booking record in database');
+    return {
+      success: false,
+      error: 'database_insert_failed',
+      readableDateTime,
+    };
+  }
 
-  // 8. Send WhatsApp confirmation message if requested
+  const finalBooking = insertedBooking;
+
+  // 9. Send WhatsApp confirmation message if requested
   if (sendWhatsAppConfirmation && conversationId && configOwnerUserId) {
     try {
       await engineSendText({
@@ -506,5 +663,6 @@ export async function executeDemoBooking(
     confirmationMessage,
     meetLink,
     googleEventId,
+    readableDateTime,
   };
 }

@@ -19,6 +19,7 @@ import { DealsSettings } from '@/components/settings/deals-settings';
 import { MembersTab } from '@/components/settings/members-tab';
 import { ApiKeysSettings } from '@/components/settings/api-keys-settings';
 import { GoogleCalendarConfig } from '@/components/settings/google-calendar-config';
+import { ProductsManager } from '@/components/settings/products-manager';
 import {
   resolveSection,
   type SettingsSection,
@@ -75,6 +76,7 @@ function SettingsPageInner() {
     profile: <ProfileForm />,
     security: <SecurityPanel />,
     appearance: <AppearancePanel />,
+    products: <ProductsManager />,
     whatsapp: <WhatsAppConfig />,
     calendar: <GoogleCalendarConfig />,
     templates: <TemplateManager />,

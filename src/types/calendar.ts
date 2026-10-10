@@ -21,6 +21,7 @@ export interface OAuthCredentials {
   refresh_token?: string;
   access_token?: string;
   expiry_date?: number;
+  email?: string;
 }
 
 export interface GoogleCalendarConfig {
@@ -46,12 +47,17 @@ export interface GoogleCalendarConfig {
 
 export interface ProductAppointmentTypeConfig {
   productKey: string;
+  productServiceId?: string;
+  name?: string;
   tagName: string;
   appointmentType: string;
   durationMinutes: number;
   ctaType: string;
   teamName: string;
   eventTitleTemplate?: string;
+  meetingMode?: string;
+  meetingLink?: string | null;
+  enabled?: boolean;
 }
 
 export interface GoogleCalendarConfigSafe {
@@ -70,6 +76,7 @@ export interface GoogleCalendarConfigSafe {
   buffer_between_meetings: number;
   confirmation_message_template: string;
   service_account_email?: string | null;
+  oauth_email?: string | null;
   appointment_types?: ProductAppointmentTypeConfig[];
   updated_at?: string;
 }
@@ -83,9 +90,11 @@ export interface CalendarBooking {
   booked_by: BookedBy;
   google_event_id?: string | null;
   google_calendar_id?: string | null;
+  product_service_id?: string | null;
+  meeting_mode?: string | null;
   title: string;
   description?: string | null;
-  attendee_email: string;
+  attendee_email?: string | null;
   attendee_name?: string | null;
   attendee_phone?: string | null;
   start_time: string;
@@ -104,12 +113,15 @@ export interface CalendarBooking {
 export interface CreateBookingPayload {
   contactId: string;
   conversationId?: string;
-  email: string;
+  email?: string | null;
   name?: string;
   phone?: string;
   startTime?: string;
   title?: string;
   durationMinutes?: number;
+  productServiceId?: string;
+  meetingMode?: string;
+  meetingLink?: string;
   sendConfirmation?: boolean;
   notes?: string;
 }

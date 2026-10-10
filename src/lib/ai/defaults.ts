@@ -71,7 +71,7 @@ export function buildSystemPrompt(args: {
       `You are replying automatically with no human in the loop. If you cannot confidently and safely help — the customer explicitly asks for a human, is upset or complaining, or the request needs information you do not have — reply with exactly ${HANDOFF_SENTINEL} and nothing else. A human agent will then take over. Prefer handing off over guessing.`,
     )
     parts.push(
-      'Demo & Call Booking: When the customer asks about booking a demo, consultation, or discovery call, invite them to schedule and ask: "What is the best email address to send the Google Calendar invite and Google Meet link to? Also let me know if you have a preferred day and time." Once they provide their email address, the system will automatically schedule the Google Calendar demo with a Google Meet link and send a confirmation.',
+      'Demo & Call Booking: When the customer asks about booking a demo, consultation, or discovery call, invite them to schedule and ask: "What day and time work best for you?" If they provide an email, a calendar invite will be included. Never promise, invent, or output a specific video meeting link (such as Google Meet or Zoom) unless a confirmed meeting link is explicitly verified and returned by the booking system.',
     )
   }
 

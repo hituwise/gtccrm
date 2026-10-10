@@ -6,8 +6,13 @@ import {
 } from '@/lib/auth/account';
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit';
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption';
-import type { CalendarAuthType, ServiceAccountKey } from '@/types/calendar';
+import type { CalendarAuthType, ServiceAccountKey, OAuthCredentials } from '@/types/calendar';
 import { DEFAULT_PRODUCT_CONFIGS, type ProductKey, type ProductActionConfig } from '@/lib/ai/actions/types';
+import {
+  getTenantProducts,
+  upsertTenantProduct,
+  validateTenantProductMeetingMode,
+} from '@/lib/products/tenant-products';
 
 function bad(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
@@ -42,26 +47,22 @@ export async function GET() {
       );
     }
 
-    // Fetch product configs from ai_configs to assemble full appointment types
-    const { data: aiConfigData } = await supabase
-      .from('ai_configs')
-      .select('product_configs')
-      .eq('account_id', accountId)
-      .maybeSingle();
-
-    const customProductConfigs = (aiConfigData?.product_configs || {}) as Record<string, Partial<ProductActionConfig>>;
-    const appointmentTypes = Object.entries(DEFAULT_PRODUCT_CONFIGS).map(([key, def]) => {
-      const custom = customProductConfigs[key] || {};
-      return {
-        productKey: key,
-        tagName: def.tagName,
-        appointmentType: custom.appointmentType || def.appointmentType,
-        durationMinutes: custom.durationMinutes || def.durationMinutes,
-        ctaType: custom.ctaType || def.ctaType,
-        teamName: custom.teamName || def.teamName,
-        eventTitleTemplate: custom.eventTitleTemplate || def.eventTitleTemplate || `{{name}} - ${def.appointmentType}`,
-      };
-    });
+    // Fetch products belonging strictly to this tenant
+    const tenantProducts = await getTenantProducts(supabase, accountId);
+    const appointmentTypes = tenantProducts.map((p) => ({
+      productKey: p.productKey || p.productServiceId,
+      productServiceId: p.productServiceId,
+      name: p.name,
+      tagName: p.tagName || p.tags?.interestTag || `${p.productServiceId.toUpperCase()}_INTEREST`,
+      appointmentType: p.appointmentType || p.name,
+      durationMinutes: p.durationMinutes || 45,
+      ctaType: p.ctaType || 'Demo',
+      teamName: p.teamName || 'Admissions',
+      eventTitleTemplate: p.eventTitleTemplate || `{{name}} - ${p.appointmentType || p.name}`,
+      meetingMode: validateTenantProductMeetingMode(p.meetingMode),
+      meetingLink: p.meetingLink || null,
+      enabled: p.enabled !== false,
+    }));
 
     if (!data) {
       return NextResponse.json({
@@ -74,6 +75,7 @@ export async function GET() {
     }
 
     let serviceAccountEmail: string | null = null;
+    let oauthEmail: string | null = null;
     const hasKey = Boolean(data.service_account_key || data.oauth_credentials);
 
     if (data.service_account_key) {
@@ -89,15 +91,29 @@ export async function GET() {
       }
     }
 
+    if (data.oauth_credentials) {
+      try {
+        let raw = data.oauth_credentials;
+        if (raw.includes(':')) {
+          raw = decrypt(raw);
+        }
+        const parsed = JSON.parse(raw) as OAuthCredentials;
+        oauthEmail = parsed.email || null;
+      } catch {
+        // ignore
+      }
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { service_account_key, oauth_credentials, ...safe } = data;
+    const { service_account_key, oauth_credentials, default_timezone, ...safe } = data;
 
     return NextResponse.json({
       configured: true,
       has_key: hasKey,
       service_account_email: serviceAccountEmail,
+      oauth_email: oauthEmail,
       allow_ai_booking: data.auto_booking_enabled !== false,
-      default_timezone: data.default_timezone || 'Asia/Kolkata',
+      default_timezone: default_timezone || 'Asia/Kolkata',
       appointment_types: appointmentTypes,
       ...safe,
     });
@@ -175,21 +191,43 @@ export async function POST(request: Request) {
       const productConfigsToStore: Record<string, ProductActionConfig> = {};
       if (Array.isArray(body.appointment_types)) {
         for (const item of body.appointment_types) {
-          if (item && item.productKey) {
-            const def = DEFAULT_PRODUCT_CONFIGS[item.productKey as ProductKey];
-            productConfigsToStore[item.productKey] = {
-              productKey: item.productKey,
-              tagName: item.tagName || def?.tagName || 'INTERESTED',
+          const key = item.productServiceId || item.productKey;
+          if (item && key) {
+            const def = DEFAULT_PRODUCT_CONFIGS[key as ProductKey];
+            const cfg: ProductActionConfig = {
+              productKey: key,
+              productServiceId: key,
+              name: item.name || def?.name || key,
+              tagName: item.tagName || def?.tagName || `${key.toUpperCase()}_INTEREST`,
               appointmentType: item.appointmentType || def?.appointmentType || 'Demo',
               durationMinutes: Number(item.durationMinutes) || def?.durationMinutes || 45,
               ctaType: item.ctaType || def?.ctaType || 'Demo',
               teamName: item.teamName || def?.teamName || 'Admissions',
               eventTitleTemplate: item.eventTitleTemplate || def?.eventTitleTemplate || `{{name}} - ${item.appointmentType}`,
+              meetingMode: validateTenantProductMeetingMode(item.meetingMode || def?.meetingMode),
+              meetingLink: item.meetingLink || def?.meetingLink || null,
+              enabled: item.enabled !== false,
             };
+            productConfigsToStore[key] = cfg;
+            await upsertTenantProduct(supabase, accountId, cfg);
           }
         }
       } else {
         Object.assign(productConfigsToStore, body.product_configs);
+        for (const [key, cfg] of Object.entries(body.product_configs as Record<string, Partial<ProductActionConfig>>)) {
+          if (cfg) {
+            await upsertTenantProduct(supabase, accountId, {
+              productKey: key,
+              productServiceId: key,
+              name: cfg.name || key,
+              appointmentType: cfg.appointmentType || cfg.name || key,
+              durationMinutes: cfg.durationMinutes || 45,
+              meetingMode: validateTenantProductMeetingMode(cfg.meetingMode),
+              enabled: cfg.enabled !== false,
+              ...cfg,
+            });
+          }
+        }
       }
 
       const { data: existingAiConfig } = await supabase

@@ -20,6 +20,8 @@ import {
 } from '@/lib/ai/actions/action-runner'
 import { analyzeCustomerIntent } from '@/lib/ai/actions/intent-detector'
 import type { ProductActionConfig, ProductKey } from '@/lib/ai/actions/types'
+import { getTenantProducts } from '@/lib/products/tenant-products'
+import { buildTenantAiSystemPrompt } from '@/lib/ai/tenant-prompt-builder'
 
 import { logDecision } from './decision-logger'
 
@@ -147,13 +149,19 @@ export async function dispatchInboundToAiReply(
     // Execute the Action System (CRM tagging, scoring, lead routing, milestone notes, calendar availability & booking)
     if (config.actionSystemEnabled !== false && userMsg) {
       try {
-        const intents = analyzeCustomerIntent({ currentText: userMsg, messages })
+        const tenantCatalogue = await getTenantProducts(db, accountId, { fallbackToSeedIfGeniplus: true });
+        const intents = analyzeCustomerIntent({
+          currentText: userMsg,
+          messages,
+          catalogue: tenantCatalogue.length > 0 ? tenantCatalogue : undefined,
+        });
         const hasActionIntent =
           intents.products.length > 0 ||
           intents.isReadyToBook ||
           intents.hasBothDateAndTime ||
           intents.hasOnlyDate ||
           intents.hasOnlyTime ||
+          Boolean(intents.email) ||
           Boolean(intents.customerName) ||
           Boolean(intents.explicitNameProvided) ||
           Boolean(intents.isSlotCheckOrReschedule) ||
@@ -183,7 +191,7 @@ export async function dispatchInboundToAiReply(
             inboundText: userMsg,
             messages,
             aiConfig: config,
-            productConfigs: config.productConfigs as Record<ProductKey, ProductActionConfig> | undefined,
+            productConfigs: tenantCatalogue,
             contactRecord: contact || undefined,
           })
 
@@ -265,8 +273,14 @@ export async function dispatchInboundToAiReply(
       latestUserMessage(messages),
     )
 
+    const tenantAiContext = await buildTenantAiSystemPrompt(
+      db,
+      accountId,
+      config.systemPrompt,
+    );
+
     const systemPrompt = buildSystemPrompt({
-      userPrompt: config.systemPrompt,
+      userPrompt: tenantAiContext.systemPrompt,
       mode: 'auto_reply',
       knowledge,
     })

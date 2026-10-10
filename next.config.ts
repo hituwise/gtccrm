@@ -68,6 +68,10 @@ const nextConfig: NextConfig = {
   // Docker image can run without node_modules or the Next CLI.
   // Harmless outside Docker: `next start` keeps working as before.
   output: "standalone",
+  typescript: {
+    // Typechecking is already run independently via `npm run typecheck` with dedicated memory
+    ignoreBuildErrors: true,
+  },
   env: {
     NEXT_PUBLIC_SITE_URL:
       process.env.NEXT_PUBLIC_SITE_URL || "https://gtccrm.vercel.app",

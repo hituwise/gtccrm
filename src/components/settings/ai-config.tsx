@@ -81,9 +81,7 @@ export function AiConfig() {
   // Empty string = leave unassigned (shared queue).
   const [handoffAgentId, setHandoffAgentId] = useState('');
   const [actionSystemEnabled, setActionSystemEnabled] = useState(true);
-  const [productConfigs, setProductConfigs] = useState<Record<ProductKey, ProductActionConfig>>(
-    DEFAULT_PRODUCT_CONFIGS,
-  );
+  const [productConfigs, setProductConfigs] = useState<Record<string, ProductActionConfig>>({});
   const [members, setMembers] = useState<AccountMember[]>([]);
 
   // Guard keyed on the account (not a bare boolean) so an in-place
@@ -119,8 +117,25 @@ export function AiConfig() {
         if (data.action_system_enabled !== undefined) {
           setActionSystemEnabled(Boolean(data.action_system_enabled));
         }
-        if (data.product_configs) {
-          setProductConfigs({ ...DEFAULT_PRODUCT_CONFIGS, ...data.product_configs });
+        if (data.product_configs && Object.keys(data.product_configs).length > 0) {
+          setProductConfigs(data.product_configs);
+        } else {
+          // Fetch tenant-specific products from /api/products
+          try {
+            const prodRes = await fetch('/api/products');
+            if (prodRes.ok) {
+              const prodData = await prodRes.json();
+              if (Array.isArray(prodData.products) && prodData.products.length > 0) {
+                const map: Record<string, ProductActionConfig> = {};
+                for (const p of prodData.products) {
+                  map[p.productServiceId || p.productKey] = p;
+                }
+                setProductConfigs(map);
+              }
+            }
+          } catch {
+            // keep empty or fallback
+          }
         }
       }
     } catch {

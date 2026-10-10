@@ -41,6 +41,23 @@ export interface CalendarActionContext {
   existingBookingId?: string;
 }
 
+export const GENERIC_DEFAULT_PRODUCT_CONFIG: ProductActionConfig = {
+  productKey: 'service',
+  productServiceId: 'service',
+  name: 'Consultation',
+  durationMinutes: 30,
+  meetingMode: 'NONE',
+  appointmentType: 'Consultation',
+  requiredFields: ['name', 'date', 'time'],
+  optionalFields: ['email', 'notes'],
+  tags: {
+    interestTag: 'INTERESTED',
+    bookedTag: 'BOOKED',
+  },
+  ctaType: 'Call',
+  teamName: 'General',
+};
+
 /**
  * Checks if a requested slot is available in Google Calendar.
  */
@@ -56,11 +73,15 @@ export async function executeCheckAvailability(
 }> {
   const { db, accountId, contactId, conversationId, productKey, productConfig, preferredTimeText, referenceDate, timezone } = context;
 
-  const resolvedConfig = productConfig || (productKey ? DEFAULT_PRODUCT_CONFIGS[productKey] : DEFAULT_PRODUCT_CONFIGS.ABACUS_KIDS);
+  const resolvedConfig =
+    productConfig ||
+    (productKey && DEFAULT_PRODUCT_CONFIGS[productKey]
+      ? DEFAULT_PRODUCT_CONFIGS[productKey]
+      : GENERIC_DEFAULT_PRODUCT_CONFIG);
   const durationMinutes = resolvedConfig.durationMinutes;
 
   const calConfig = await loadCalendarConfig(db, accountId);
-  const tz = timezone || calConfig?.default_timezone || 'Asia/Kolkata';
+  const tz = timezone || resolvedConfig.timezone || calConfig?.default_timezone || 'Asia/Kolkata';
 
   const slot = parseBookingSlot(
     preferredTimeText,
@@ -70,8 +91,56 @@ export async function executeCheckAvailability(
     Boolean(referenceDate),
   );
 
-  // If calendar is not connected or inactive, return unavailable so we don't fake availability
-  if (!calConfig?.is_active || (!calConfig.service_account_key && !calConfig.oauth_credentials)) {
+  const hasCredentials = Boolean(
+    calConfig?.is_active &&
+    (calConfig.service_account_key || calConfig.oauth_credentials)
+  );
+
+  // If calendar is connected, check Google Calendar availability
+  if (hasCredentials) {
+    if (calConfig?.auto_booking_enabled === false) {
+      return {
+        available: false,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        humanText: slot.humanText,
+        durationMinutes,
+        conflictReason: 'AI calendar booking permission is disabled in calendar settings',
+      };
+    }
+
+    const check = await checkGoogleCalendarAvailability(calConfig!, {
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+    });
+
+    await logAiAction({
+      db,
+      accountId,
+      contactId,
+      conversationId,
+      action: 'CALENDAR_AVAILABILITY_CHECKED',
+      details: {
+        slotRequested: slot.startTime,
+        durationMinutes,
+        available: check.available,
+        conflictReason: check.conflictReason,
+      },
+    });
+
+    return {
+      available: check.available,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      humanText: slot.humanText,
+      durationMinutes,
+      conflictReason: check.conflictReason,
+    };
+  }
+
+  // If calendar is NOT connected:
+  // For GOOGLE_MEET mode, we cannot book without a connected Google Calendar
+  if (resolvedConfig.meetingMode === 'GOOGLE_MEET') {
     return {
       available: false,
       startTime: slot.startTime,
@@ -82,44 +151,14 @@ export async function executeCheckAvailability(
     };
   }
 
-  // Check if AI booking permission is disabled in calendar settings
-  if (calConfig.auto_booking_enabled === false) {
-    return {
-      available: false,
-      startTime: slot.startTime,
-      endTime: slot.endTime,
-      humanText: slot.humanText,
-      durationMinutes,
-      conflictReason: 'AI calendar booking permission is disabled in calendar settings',
-    };
-  }
-
-  const check = await checkGoogleCalendarAvailability(calConfig, {
-    startTime: slot.startTime,
-    endTime: slot.endTime,
-  });
-
-  await logAiAction({
-    db,
-    accountId,
-    contactId,
-    conversationId,
-    action: 'CALENDAR_AVAILABILITY_CHECKED',
-    details: {
-      slotRequested: slot.startTime,
-      durationMinutes,
-      available: check.available,
-      conflictReason: check.conflictReason,
-    },
-  });
-
+  // For static links, Zoom rooms, or direct phone/in-person sessions without external calendar:
+  // Availability is granted for the requested slot
   return {
-    available: check.available,
+    available: true,
     startTime: slot.startTime,
     endTime: slot.endTime,
     humanText: slot.humanText,
     durationMinutes,
-    conflictReason: check.conflictReason,
   };
 }
 
@@ -133,7 +172,11 @@ export async function executeGetAvailableSlots(
   count: number = 3,
 ): Promise<AvailableSlotResult[]> {
   const { db, accountId, productKey, productConfig, timezone } = context;
-  const resolvedConfig = productConfig || (productKey ? DEFAULT_PRODUCT_CONFIGS[productKey] : DEFAULT_PRODUCT_CONFIGS.ABACUS_KIDS);
+  const resolvedConfig =
+    productConfig ||
+    (productKey && DEFAULT_PRODUCT_CONFIGS[productKey]
+      ? DEFAULT_PRODUCT_CONFIGS[productKey]
+      : GENERIC_DEFAULT_PRODUCT_CONFIG);
 
   const calConfig = await loadCalendarConfig(db, accountId);
   if (!calConfig) {
@@ -143,15 +186,15 @@ export async function executeGetAvailableSlots(
   return getGoogleCalendarAvailableSlots(calConfig, {
     targetDate,
     durationMinutes: resolvedConfig.durationMinutes,
-    timezone: timezone || calConfig.default_timezone || 'UTC',
+    timezone: timezone || resolvedConfig.timezone || calConfig.default_timezone || 'UTC',
     count,
   });
 }
 
 /**
- * Books appointment in Google Calendar, creates database record, tags contact,
+ * Books appointment according to the configured meeting mode, creates database record, tags contact,
  * adds CRM note, and assigns lead.
- * ONLY applies DEMO_BOOKED or CALL_BOOKED upon actual booking success!
+ * ONLY applies booked tags upon actual booking success!
  */
 export async function executeBookAppointment(
   context: CalendarActionContext,
@@ -162,7 +205,7 @@ export async function executeBookAppointment(
     contactId,
     conversationId,
     configOwnerUserId,
-    productKey = 'ABACUS_KIDS',
+    productKey,
     productConfig,
     preferredTimeText,
     email,
@@ -171,7 +214,14 @@ export async function executeBookAppointment(
     timezone,
   } = context;
 
-  if (!email) {
+  const resolvedConfig =
+    productConfig ||
+    (productKey && DEFAULT_PRODUCT_CONFIGS[productKey]
+      ? DEFAULT_PRODUCT_CONFIGS[productKey]
+      : GENERIC_DEFAULT_PRODUCT_CONFIG);
+
+  // Email is optional unless this specific product config explicitly mandates it in requiredFields
+  if (resolvedConfig.requiredFields?.includes('email') && !email) {
     return {
       action: 'book_appointment',
       success: false,
@@ -179,7 +229,6 @@ export async function executeBookAppointment(
     };
   }
 
-  const resolvedConfig = productConfig || DEFAULT_PRODUCT_CONFIGS[productKey];
   const duration = resolvedConfig.durationMinutes;
   const rawTitle = resolvedConfig.eventTitleTemplate || `{{name}} - ${resolvedConfig.appointmentType}`;
   const title = rawTitle.replace(/\{\{name\}\}/g, customerName || 'Customer').replace(/\{name\}/g, customerName || 'Customer');
@@ -194,7 +243,7 @@ export async function executeBookAppointment(
         booked: false,
       };
     }
-    const tz = timezone || calConfig?.default_timezone || 'Asia/Kolkata';
+    const tz = timezone || resolvedConfig.timezone || calConfig?.default_timezone || 'Asia/Kolkata';
 
     const bookingResult = await executeDemoBooking({
       db,
@@ -202,38 +251,56 @@ export async function executeBookAppointment(
       contactId,
       conversationId,
       configOwnerUserId,
-      email,
+      email: email || null,
       customerName,
       childAge,
       preferredTimeText,
       bookedBy: 'ai',
       manualTitle: title,
       manualDuration: duration,
+      productConfig: resolvedConfig,
+      meetingMode: resolvedConfig.meetingMode,
+      staticMeetingLink: resolvedConfig.meetingLink,
+      timezone: tz,
       sendWhatsAppConfirmation: false, // AI Agent coordinates response message
     });
 
-    // GOLDEN RULE: Must verify booking success AND real external event ID
-    if (!bookingResult.success || !bookingResult.booking || !bookingResult.booking.google_event_id) {
+    // GOLDEN RULE: For GOOGLE_MEET, verify booking success AND real external event ID
+    const isGoogleMeet = (resolvedConfig.meetingMode || 'GOOGLE_MEET') === 'GOOGLE_MEET';
+    const isSuccess = isGoogleMeet
+      ? Boolean(bookingResult.success && bookingResult.booking && bookingResult.booking.google_event_id)
+      : Boolean(bookingResult.success && bookingResult.booking);
+
+    if (!isSuccess) {
       await logAiAction({
         db,
         accountId,
         contactId,
         conversationId,
         action: 'APPOINTMENT_BOOKING_FAILED',
-        details: { error: bookingResult.error, email, preferredTimeText, externalEventIdMissing: !bookingResult.booking?.google_event_id },
+        details: {
+          error: bookingResult.error,
+          email,
+          preferredTimeText,
+          externalEventIdMissing: isGoogleMeet && !bookingResult.booking?.google_event_id,
+        },
       });
 
       return {
         action: 'book_appointment',
         success: false,
-        error: bookingResult.error || 'Google Calendar event creation failed — no external event ID returned',
+        error: bookingResult.error || 'Appointment booking failed — calendar creation could not be completed',
       };
     }
 
-    const extEventId = bookingResult.booking.google_event_id;
+    const booking = bookingResult.booking!;
+    const extEventId = booking.google_event_id || 'LOCAL';
 
-    // 1. Tag with DEMO_BOOKED or CALL_BOOKED
-    const bookingTag = resolvedConfig.ctaType === 'Call' ? 'CALL_BOOKED' : 'DEMO_BOOKED';
+    // 1. Tag with configured booked tag (or DEMO_BOOKED / CALL_BOOKED fallback)
+    const bookingTag =
+      resolvedConfig.tags?.bookedTag ||
+      (resolvedConfig.ctaType === 'Call' ? 'CALL_BOOKED' : 'DEMO_BOOKED');
+
     await applyContactTag({
       db,
       accountId,
@@ -263,10 +330,10 @@ export async function executeBookAppointment(
     });
 
     // 4. Create internal CRM milestone note with external event ID
-    const formattedDate = formatBookingDateTime(bookingResult.booking.start_time, tz);
+    const formattedDate = formatBookingDateTime(booking.start_time, tz);
     const detailParts: string[] = [`Slot: ${formattedDate}`, `Duration: ${duration} mins`];
     if (childAge) detailParts.push(`Child Age: ${childAge}`);
-    if (bookingResult.booking.meet_link) detailParts.push(`Google Meet: ${bookingResult.booking.meet_link}`);
+    if (booking.meet_link) detailParts.push(`Google Meet: ${booking.meet_link}`);
 
     await createInternalCrmNote({
       db,
@@ -288,7 +355,7 @@ export async function executeBookAppointment(
       accountId,
       conversationId,
       contactId,
-      productKey,
+      productKey: (resolvedConfig.productKey || (resolvedConfig.productServiceId as ProductKey) || productKey || 'ABACUS_KIDS') as ProductKey,
       targetAgentId: resolvedConfig.assignedAgentId,
       teamName: resolvedConfig.teamName,
     });
@@ -301,11 +368,11 @@ export async function executeBookAppointment(
       conversationId,
       action: 'APPOINTMENT_BOOKED',
       details: {
-        bookingId: bookingResult.booking.id,
+        bookingId: booking.id,
         externalEventId: extEventId,
         title,
-        startTime: bookingResult.booking.start_time,
-        meetLink: bookingResult.booking.meet_link,
+        startTime: booking.start_time,
+        meetLink: booking.meet_link,
       },
     });
 
@@ -313,8 +380,8 @@ export async function executeBookAppointment(
       action: 'book_appointment',
       success: true,
       booked: true,
-      bookingId: bookingResult.booking.id,
-      meetLink: bookingResult.booking.meet_link,
+      bookingId: booking.id,
+      meetLink: booking.meet_link,
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -349,7 +416,7 @@ export async function executeRescheduleAppointment(
     contactId,
     conversationId,
     configOwnerUserId,
-    productKey = 'ABACUS_KIDS',
+    productKey,
     productConfig,
     preferredTimeText,
     existingBookingId,
@@ -359,7 +426,11 @@ export async function executeRescheduleAppointment(
     referenceDate,
   } = context;
 
-  const resolvedConfig = productConfig || DEFAULT_PRODUCT_CONFIGS[productKey];
+  const resolvedConfig =
+    productConfig ||
+    (productKey && DEFAULT_PRODUCT_CONFIGS[productKey]
+      ? DEFAULT_PRODUCT_CONFIGS[productKey]
+      : GENERIC_DEFAULT_PRODUCT_CONFIG);
   const duration = resolvedConfig.durationMinutes;
 
   const calConfig = await loadCalendarConfig(db, accountId);

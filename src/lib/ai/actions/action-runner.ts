@@ -4,6 +4,8 @@ import {
   type ProductActionConfig,
   type ActionPipelineResult,
   type CalendarActionResult,
+  type TenantProductConfig,
+  type MeetingLinkMode,
   DEFAULT_PRODUCT_CONFIGS,
 } from './types';
 import { analyzeCustomerIntent } from './intent-detector';
@@ -16,7 +18,13 @@ import {
   executeBookAppointment,
   executeRescheduleAppointment,
 } from './calendar-actions';
-import { findActiveBookingForContact } from '@/lib/calendar/booking-coordinator';
+import { findActiveBookingForContact, loadCalendarConfig } from '@/lib/calendar/booking-coordinator';
+import { getTenantProducts, getTenantBusinessProfile } from '@/lib/products/tenant-products';
+import {
+  detectScheduleQuery,
+  formatScheduleResponse,
+  extractConversationCollectedFields,
+} from '@/lib/ai/conversation-state';
 import { logAiAction } from './action-logger';
 import { formatBookingDateTime, hasDateSpecified, hasTimeSpecified } from '@/lib/calendar/date-parser';
 import type { ChatMessage, AiConfig } from '@/lib/ai/types';
@@ -30,7 +38,7 @@ export interface RunAiPipelineArgs {
   inboundText: string;
   messages: ChatMessage[];
   aiConfig?: AiConfig | null;
-  productConfigs?: Record<ProductKey, ProductActionConfig>;
+  productConfigs?: Record<ProductKey, ProductActionConfig> | TenantProductConfig[];
   contactRecord?: {
     id: string;
     name?: string | null;
@@ -67,6 +75,7 @@ export function formatDemoBookingConfirmation(args: {
   durationMinutes: number;
   timezone?: string;
   meetLink?: string | null;
+  meetingMode?: MeetingLinkMode;
   isReschedule?: boolean;
 }): string {
   const tz = args.timezone || 'Asia/Kolkata';
@@ -91,8 +100,18 @@ export function formatDemoBookingConfirmation(args: {
     `⏰ ${time} ${tzLabel}\n` +
     `⏱️ ${args.durationMinutes} minutes`;
 
+  const mode = args.meetingMode || 'GOOGLE_MEET';
+
   if (args.meetLink && args.meetLink.startsWith('http')) {
-    msg += `\n💻 Google Meet: ${args.meetLink}`;
+    if (mode === 'ZOOM') {
+      msg += `\n📹 Zoom: ${args.meetLink}`;
+    } else if (mode === 'STATIC_MEETING_LINK') {
+      msg += `\n🔗 Meeting Link: ${args.meetLink}`;
+    } else {
+      msg += `\n💻 Google Meet: ${args.meetLink}`;
+    }
+  } else if (mode === 'NONE' || mode === 'MANUAL_FOLLOW_UP' || !args.meetLink) {
+    msg += `\n📞 We will call you directly at the scheduled time.`;
   }
 
   msg += `\n\nSee you there! 🎉`;
@@ -114,38 +133,70 @@ export async function runAiActionPipeline(
     configOwnerUserId,
     inboundText,
     messages,
-    productConfigs = DEFAULT_PRODUCT_CONFIGS,
+    productConfigs,
     contactRecord,
   } = args;
 
   const tagsAdded: string[] = [];
   const tagsRemoved: string[] = [];
 
+  // Resolve Tenant Product Catalogue
+  let resolvedCatalogue: TenantProductConfig[] = [];
+  if (Array.isArray(productConfigs)) {
+    resolvedCatalogue = productConfigs;
+  } else if (productConfigs && Object.keys(productConfigs).length > 0) {
+    resolvedCatalogue = Object.values(productConfigs);
+  } else {
+    resolvedCatalogue = await getTenantProducts(db, accountId, { fallbackToSeedIfGeniplus: true });
+  }
+
+  const catalogueMap: Record<string, TenantProductConfig> = {};
+  for (const p of resolvedCatalogue) {
+    catalogueMap[p.productServiceId] = p;
+    if (p.productKey) catalogueMap[p.productKey] = p;
+  }
+
   // 1. Analyze intents, products, signals, dates, and times
   const intents = analyzeCustomerIntent({
     currentText: inboundText,
     messages,
     contactEmail: contactRecord?.email,
+    catalogue: resolvedCatalogue.length > 0 ? resolvedCatalogue : undefined,
   });
+
+  // Ambiguity check: If customer's request matches multiple products equally, ask clarifying question
+  if (intents.isAmbiguousProduct && intents.clarifyingQuestion) {
+    return {
+      customerResponse: intents.clarifyingQuestion,
+      productKey: intents.products[0],
+      tagsAdded,
+      tagsRemoved,
+      leadTemperature: 'warm',
+      leadScore: 10,
+      assignedAgentId: null,
+      isHandoff: false,
+    };
+  }
 
   const primaryProductKey: ProductKey | undefined = intents.products[0];
   const activeProductConfig = primaryProductKey
-    ? productConfigs[primaryProductKey] || DEFAULT_PRODUCT_CONFIGS[primaryProductKey]
+    ? catalogueMap[primaryProductKey] || DEFAULT_PRODUCT_CONFIGS[primaryProductKey]
     : undefined;
 
-  // 2. Product Tagging
+  // 2. Product Tagging (scoped to tenant)
   for (const prodKey of intents.products) {
-    const pCfg = productConfigs[prodKey] || DEFAULT_PRODUCT_CONFIGS[prodKey];
-    if (pCfg?.tagName) {
+    const pCfg = catalogueMap[prodKey] || DEFAULT_PRODUCT_CONFIGS[prodKey];
+    const tagName = pCfg?.tags?.interestTag || pCfg?.tagName;
+    if (tagName) {
       const added = await applyContactTag({
         db,
         accountId,
         contactId,
         conversationId,
-        tagName: pCfg.tagName,
+        tagName,
         color: '#6366F1',
       });
-      if (added) tagsAdded.push(pCfg.tagName);
+      if (added) tagsAdded.push(tagName);
 
       await logAiAction({
         db,
@@ -153,7 +204,7 @@ export async function runAiActionPipeline(
         contactId,
         conversationId,
         action: 'AI_PRODUCT_DETECTED',
-        details: { productKey: prodKey, tag: pCfg.tagName },
+        details: { productKey: prodKey, tag: tagName },
       });
     }
   }
@@ -186,14 +237,17 @@ export async function runAiActionPipeline(
   // 5. Lead Assignment (if product is identified or high intent)
   let assignedAgentId: string | null = null;
   if (activeProductConfig) {
+    const teamName = activeProductConfig.assignmentRules?.teamName || activeProductConfig.teamName || 'General';
+    const targetAgentId = activeProductConfig.assignmentRules?.assignedAgentId || activeProductConfig.assignedAgentId;
+
     assignedAgentId = await assignLeadToTeam({
       db,
       accountId,
       conversationId,
       contactId,
-      productKey: activeProductConfig.productKey,
-      targetAgentId: activeProductConfig.assignedAgentId,
-      teamName: activeProductConfig.teamName,
+      productKey: activeProductConfig.productKey || activeProductConfig.productServiceId,
+      targetAgentId,
+      teamName,
     });
   }
 
@@ -252,8 +306,61 @@ export async function runAiActionPipeline(
   // Check if contact already has an active confirmed booking
   const activeBooking = await findActiveBookingForContact(db, accountId, contactId);
 
+  const calConfig = await loadCalendarConfig(db, accountId);
   const effectiveProductConfig =
-    activeProductConfig || DEFAULT_PRODUCT_CONFIGS.ABACUS_KIDS;
+    activeProductConfig || (resolvedCatalogue.length > 0 ? resolvedCatalogue[0] : undefined);
+  const timezone =
+    effectiveProductConfig?.timezone || calConfig?.default_timezone || 'Asia/Kolkata';
+
+  // Schedule or Timing Query (answer strictly from tenant schedule, never invent timings)
+  if (detectScheduleQuery(inboundText)) {
+    const profile = await getTenantBusinessProfile(db, accountId);
+    customerResponse = formatScheduleResponse(effectiveProductConfig, profile);
+    return {
+      customerResponse: sanitizeCustomerResponse(customerResponse),
+      productKey: primaryProductKey,
+      tagsAdded,
+      tagsRemoved,
+      leadTemperature: 'warm',
+      leadScore: finalLeadScore,
+      assignedAgentId,
+      isHandoff: false,
+    };
+  }
+
+  // If no product is configured for this tenant and customer wants to book
+  if (!effectiveProductConfig && (intents.isReadyToBook || intents.hasBothDateAndTime || intents.hasOnlyDate)) {
+    customerResponse =
+      `Thank you for reaching out! Our team will contact you directly to help schedule and confirm your appointment. What day and time work best for you?`;
+    return {
+      customerResponse: sanitizeCustomerResponse(customerResponse),
+      productKey: primaryProductKey,
+      tagsAdded,
+      tagsRemoved,
+      leadTemperature: 'warm',
+      leadScore: finalLeadScore,
+      assignedAgentId,
+      isHandoff: false,
+    };
+  }
+
+  // Check if product is in self-scheduling BOOKING_PAGE mode
+  if (effectiveProductConfig && effectiveProductConfig.meetingMode === 'BOOKING_PAGE' && (intents.isReadyToBook || intents.signals.includes('requests_demo_or_call'))) {
+    const pageUrl = effectiveProductConfig.meetingLink || '';
+    customerResponse = pageUrl
+      ? `You can choose a convenient slot and complete your booking directly on our calendar page here:\n🔗 ${pageUrl}`
+      : `Please visit our booking page to select your preferred appointment slot.`;
+    return {
+      customerResponse: sanitizeCustomerResponse(customerResponse),
+      productKey: primaryProductKey,
+      tagsAdded,
+      tagsRemoved,
+      leadTemperature: 'warm',
+      leadScore: finalLeadScore,
+      assignedAgentId,
+      isHandoff: false,
+    };
+  }
 
   const isRescheduleScenario =
     Boolean(activeBooking) &&
@@ -265,21 +372,21 @@ export async function runAiActionPipeline(
       intents.hasBothDateAndTime ||
       (intents.hasOnlyDate && intents.hasOnlyTime));
 
-  if (isRescheduleScenario && activeBooking) {
+  if (isRescheduleScenario && activeBooking && effectiveProductConfig) {
     // A. RESCHEDULING SCENARIO: Customer requested an alternative slot or reschedule
     const inheritedDate = new Date(activeBooking.start_time);
-    const timezone = activeBooking.timezone || 'Asia/Kolkata';
+    const bookingTz = activeBooking.timezone || timezone;
 
     const check = await executeCheckAvailability({
       db,
       accountId,
       contactId,
       conversationId,
-      productKey: effectiveProductConfig.productKey,
+      productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
       productConfig: effectiveProductConfig,
       preferredTimeText: inboundText,
       referenceDate: inheritedDate,
-      timezone,
+      timezone: bookingTz,
     });
 
     if (check.available) {
@@ -290,11 +397,11 @@ export async function runAiActionPipeline(
         conversationId,
         configOwnerUserId,
         existingBookingId: activeBooking.id,
-        productKey: effectiveProductConfig.productKey,
+        productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
         productConfig: effectiveProductConfig,
         preferredTimeText: inboundText,
         customerName: contactRecord?.name || 'there',
-        timezone,
+        timezone: bookingTz,
         referenceDate: inheritedDate,
       });
 
@@ -309,13 +416,14 @@ export async function runAiActionPipeline(
           appointmentType: apptName,
           isoStartTime: check.startTime,
           durationMinutes: effectiveProductConfig.durationMinutes,
-          timezone,
+          timezone: bookingTz,
           meetLink: reschedRes.meetLink,
+          meetingMode: effectiveProductConfig.meetingMode,
           isReschedule: true,
         });
       } else {
         customerResponse =
-          `I couldn't move your appointment to that slot on Google Calendar. Let me know another time that works for you!`;
+          `I couldn't move your appointment to that slot on the calendar. Let me know another time that works for you!`;
       }
     } else {
       const alternatives = await executeGetAvailableSlots(
@@ -324,10 +432,10 @@ export async function runAiActionPipeline(
           accountId,
           contactId,
           conversationId,
-          productKey: effectiveProductConfig.productKey,
+          productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
           productConfig: effectiveProductConfig,
           preferredTimeText: inboundText,
-          timezone,
+          timezone: bookingTz,
         },
         check.startTime,
         3,
@@ -364,36 +472,52 @@ export async function runAiActionPipeline(
     }
 
     const effectiveEmail = intents.email || contactRecord?.email || activeBooking?.attendee_email;
-    const hasFullName = Boolean(
-      contactRecord?.name &&
-      contactRecord.name.trim().includes(' ') &&
-      !/^(?:parent|customer|there|test)/i.test(contactRecord.name)
-    );
-    const effectiveName =
-      intents.customerName ||
-      (intents.explicitNameProvided ? intents.customerName : null) ||
-      (hasFullName ? contactRecord?.name : null);
-    const hasDate = Boolean(intents.requestedDateText || hasDateSpecified(inboundText));
-    const hasTime = Boolean(intents.requestedTimeText || hasTimeSpecified(inboundText));
+    const isPlaceholderName = (name?: string | null) =>
+      !name || /^(?:parent|customer|there|test|lead|user)$/i.test(name.trim());
 
-    // Section 7 & 8: Validate required booking fields
+    const effectiveName =
+      (intents.explicitNameProvided && intents.customerName) ||
+      intents.customerName ||
+      (contactRecord?.name && !isPlaceholderName(contactRecord.name) ? contactRecord.name : null);
+
+    const hasDate = Boolean(
+      intents.requestedDateText ||
+      hasDateSpecified(inboundText) ||
+      (preferredTimeText && hasDateSpecified(preferredTimeText))
+    );
+    const hasTime = Boolean(
+      intents.requestedTimeText ||
+      hasTimeSpecified(inboundText) ||
+      (preferredTimeText && hasTimeSpecified(preferredTimeText))
+    );
+
+    const reqFields = effectiveProductConfig.requiredFields || ['name', 'date', 'time'];
+    const requiresEmail = reqFields.includes('email');
+    const requiresName = reqFields.includes('name');
+
+    // Immediately persist customer email so it is never requested repeatedly
+    if (effectiveEmail && contactRecord && contactRecord.email !== effectiveEmail) {
+      await db
+        .from('contacts')
+        .update({ email: effectiveEmail, updated_at: new Date().toISOString() })
+        .eq('id', contactId);
+    }
+
     if (!hasDate && !hasTime) {
       const ageStr = intents.childAge ? ` for your ${intents.childAge}-year-old child` : '';
       customerResponse =
-        `Wonderful 😊 We can arrange a free ${effectiveProductConfig.durationMinutes}-minute ${effectiveProductConfig.appointmentType}${ageStr}.\n\n` +
-        `What is the best email address to send the booking details to? Also let me know if you have a preferred day and time.`;
+        `Wonderful 😊 We can arrange a ${effectiveProductConfig.durationMinutes}-minute ${effectiveProductConfig.appointmentType}${ageStr}.\n\n` +
+        `What day and time work best for you?`;
     } else if (!hasDate) {
       customerResponse = `Got it! Which day would work best for you?`;
     } else if (!hasTime) {
       customerResponse = `Got it! What time would work best for you?`;
-    } else if (!effectiveEmail) {
-      customerResponse = `Great! What is the best email address to send the demo confirmation and calendar invite to?`;
-    } else if (!effectiveName) {
-      // Missing customer/parent name: Ask ONLY for name, do not re-ask child age, email, date, time
+    } else if (requiresEmail && !effectiveEmail) {
+      customerResponse = `Great! What is the best email address to send the booking confirmation and invite to?`;
+    } else if (requiresName && !effectiveName) {
       customerResponse = `Perfect 😊 What name should I use for the booking?`;
     } else {
       // ALL REQUIRED FIELDS PRESENT: Construct validated booking object & execute
-      // Update contact name & email if newly collected
       if (effectiveName && contactRecord && contactRecord.name !== effectiveName) {
         await db
           .from('contacts')
@@ -406,15 +530,15 @@ export async function runAiActionPipeline(
         accountId,
         contactId,
         conversationId,
-        productKey: effectiveProductConfig.productKey,
+        productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
         productConfig: effectiveProductConfig,
         preferredTimeText,
-        timezone: 'Asia/Kolkata',
+        timezone,
       });
 
       if (check.available) {
         if (activeBooking) {
-          // If an active booking already exists, reschedule rather than creating a duplicate!
+          // Reschedule rather than duplicating
           const reschedRes = await executeRescheduleAppointment({
             db,
             accountId,
@@ -422,11 +546,11 @@ export async function runAiActionPipeline(
             conversationId,
             configOwnerUserId,
             existingBookingId: activeBooking.id,
-            productKey: effectiveProductConfig.productKey,
+            productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
             productConfig: effectiveProductConfig,
             preferredTimeText,
             customerName: effectiveName || contactRecord?.name || 'there',
-            timezone: 'Asia/Kolkata',
+            timezone,
           });
 
           calendarResult = reschedRes;
@@ -435,18 +559,19 @@ export async function runAiActionPipeline(
             const apptName =
               effectiveProductConfig.productKey === 'ABACUS_KIDS'
                 ? 'Abacus demo'
-                : effectiveProductConfig.appointmentType;
+                : effectiveProductConfig.appointmentType || effectiveProductConfig.name || 'session';
             customerResponse = formatDemoBookingConfirmation({
               appointmentType: apptName,
               isoStartTime: check.startTime,
               durationMinutes: effectiveProductConfig.durationMinutes,
-              timezone: 'Asia/Kolkata',
+              timezone,
               meetLink: reschedRes.meetLink,
+              meetingMode: effectiveProductConfig.meetingMode,
               isReschedule: true,
             });
           } else {
             customerResponse =
-              `I couldn't move your appointment to that slot on Google Calendar. Let me know another time that works for you!`;
+              `I couldn't move your appointment to that slot on the calendar. Let me know another time that works for you!`;
           }
         } else {
           // Book new appointment
@@ -456,34 +581,39 @@ export async function runAiActionPipeline(
             contactId,
             conversationId,
             configOwnerUserId,
-            productKey: effectiveProductConfig.productKey,
+            productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
             productConfig: effectiveProductConfig,
             preferredTimeText,
-            email: effectiveEmail,
+            email: effectiveEmail || null,
             childAge: intents.childAge,
-            customerName: effectiveName,
-            timezone: 'Asia/Kolkata',
+            customerName: effectiveName || undefined,
+            timezone,
           });
 
           calendarResult = bookRes;
 
           if (bookRes.success) {
-            tagsAdded.push(effectiveProductConfig.ctaType === 'Call' ? 'CALL_BOOKED' : 'DEMO_BOOKED');
+            const bookedTag =
+              effectiveProductConfig.tags?.bookedTag ||
+              (effectiveProductConfig.ctaType === 'Call' ? 'CALL_BOOKED' : 'DEMO_BOOKED');
+            tagsAdded.push(bookedTag);
             finalLeadTemperature = 'hot';
             finalLeadScore = Math.min(100, finalLeadScore + 25);
 
             const apptName =
               effectiveProductConfig.productKey === 'ABACUS_KIDS'
                 ? 'Abacus demo'
-                : effectiveProductConfig.appointmentType;
+                : effectiveProductConfig.appointmentType || effectiveProductConfig.name || 'session';
             customerResponse = formatDemoBookingConfirmation({
               appointmentType: apptName,
               isoStartTime: check.startTime,
               durationMinutes: effectiveProductConfig.durationMinutes,
-              timezone: 'Asia/Kolkata',
+              timezone,
               meetLink: bookRes.meetLink,
+              meetingMode: effectiveProductConfig.meetingMode,
             });
           } else if (bookRes.error?.includes('permission is disabled')) {
+            const apptName = effectiveProductConfig.appointmentType || effectiveProductConfig.name || 'session';
             customerResponse =
               `Thank you for sharing your details! Our team will reach out directly to schedule and confirm your ${apptName}.`;
           } else {
@@ -491,13 +621,14 @@ export async function runAiActionPipeline(
               `I'm having trouble reserving that exact slot on Google Calendar right now. Please let me know another time that works or our team will reach out directly.`;
           }
         }
-      } else if (check.conflictReason?.includes('permission is disabled')) {
-        const apptName =
-          effectiveProductConfig.productKey === 'ABACUS_KIDS'
-            ? 'Abacus demo'
-            : effectiveProductConfig.appointmentType;
+      } else if (
+        check.conflictReason?.includes('permission is disabled') ||
+        check.conflictReason?.includes('not connected') ||
+        check.conflictReason?.includes('Calendar is not connected')
+      ) {
+        const apptName = effectiveProductConfig.appointmentType || effectiveProductConfig.name || 'session';
         customerResponse =
-          `Thank you for sharing your details! Our team will reach out directly to schedule and confirm your ${apptName}.`;
+          `Thank you for sharing your details! Our team will reach out directly to confirm your ${apptName} for ${check.humanText}.`;
       } else {
         const alternatives = await executeGetAvailableSlots(
           {
@@ -505,10 +636,10 @@ export async function runAiActionPipeline(
             accountId,
             contactId,
             conversationId,
-            productKey: effectiveProductConfig.productKey,
+            productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
             productConfig: effectiveProductConfig,
             preferredTimeText,
-            timezone: 'Asia/Kolkata',
+            timezone,
           },
           check.startTime,
           3,
@@ -581,7 +712,7 @@ export async function runAiActionPipeline(
     const hasEmail = Boolean(intents.email || contactRecord?.email);
     customerResponse = hasEmail
       ? `Wonderful! Our ${apptLabel} takes about ${activeProductConfig.durationMinutes} minutes${agePart}. What day and time work best for you?`
-      : `Wonderful 😊 We can arrange a free ${activeProductConfig.durationMinutes}-minute ${apptLabel}${agePart}. What day and time work best for you? Also let me know if you have an email address to send the booking details to.`;
+      : `Wonderful 😊 We can arrange a ${activeProductConfig.durationMinutes}-minute ${apptLabel}${agePart}. What day and time work best for you?`;
   } else if (primaryProductKey && activeProductConfig) {
     // Product intent detected without immediate booking slot
     crmNoteCreated = await createInternalCrmNote({
@@ -618,6 +749,9 @@ export async function runAiActionPipeline(
     } else if (primaryProductKey === 'RUBIKS_CUBE') {
       customerResponse =
         `Awesome! Our Rubik's Cube program teaches children how to solve the 3x3 cube step-by-step with speedcubing algorithms. Would you like to book a free demo session?`;
+    } else {
+      customerResponse =
+        `Great! Our ${activeProductConfig.name} is designed to ${activeProductConfig.description || 'help you achieve your goals'}. Would you like to schedule a ${activeProductConfig.durationMinutes}-minute ${activeProductConfig.appointmentType}?`;
     }
   }
 

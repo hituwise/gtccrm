@@ -43,62 +43,7 @@ const COMMON_TIMEZONES = [
   'Australia/Sydney',
 ];
 
-const DEFAULT_APPOINTMENT_TYPES: ProductAppointmentTypeConfig[] = [
-  {
-    productKey: 'ABACUS_KIDS',
-    tagName: 'ABACUS_KIDS_INTEREST',
-    appointmentType: 'Free Abacus Demo',
-    durationMinutes: 45,
-    ctaType: 'Demo',
-    teamName: 'Kids/Admissions',
-    eventTitleTemplate: '{{name}} - Abacus Demo',
-  },
-  {
-    productKey: 'GTC',
-    tagName: 'GTC_INTEREST',
-    appointmentType: 'GTC Training / Business Call',
-    durationMinutes: 30,
-    ctaType: 'Call',
-    teamName: 'Teacher Training/Sales',
-    eventTitleTemplate: '{{name}} - GTC Training Call',
-  },
-  {
-    productKey: 'RUBIKS_CUBE',
-    tagName: 'RUBIKS_CUBE_INTEREST',
-    appointmentType: "Rubik's Cube Demo",
-    durationMinutes: 45,
-    ctaType: 'Demo',
-    teamName: 'Kids Programs',
-    eventTitleTemplate: "{{name}} - Rubik's Cube Demo",
-  },
-  {
-    productKey: 'GOLD',
-    tagName: 'GOLD_INTEREST',
-    appointmentType: 'Gold Business Growth Call',
-    durationMinutes: 45,
-    ctaType: 'Call',
-    teamName: 'Business Growth/Sales',
-    eventTitleTemplate: '{{name}} - Business Growth Call',
-  },
-  {
-    productKey: 'MAA',
-    tagName: 'MAA_INTEREST',
-    appointmentType: 'MAA Product Demo',
-    durationMinutes: 30,
-    ctaType: 'Demo',
-    teamName: 'Academy Software/Product',
-    eventTitleTemplate: '{{name}} - MAA Product Demo',
-  },
-  {
-    productKey: 'LEAD_PILOT',
-    tagName: 'LEAD_PILOT_INTEREST',
-    appointmentType: 'Lead Pilot Demo / Call',
-    durationMinutes: 30,
-    ctaType: 'Demo/Call',
-    teamName: 'SaaS/Sales',
-    eventTitleTemplate: '{{name}} - Lead Pilot Demo',
-  },
-];
+const DEFAULT_APPOINTMENT_TYPES: ProductAppointmentTypeConfig[] = [];
 
 export function GoogleCalendarConfig() {
   const [loading, setLoading] = useState(true);
@@ -119,8 +64,8 @@ export function GoogleCalendarConfig() {
   const [workingHoursEnd, setWorkingHoursEnd] = useState('18:00');
   const [bufferMinutes, setBufferMinutes] = useState('15');
 
-  // Product appointment types
-  const [appointmentTypes, setAppointmentTypes] = useState<ProductAppointmentTypeConfig[]>(DEFAULT_APPOINTMENT_TYPES);
+  // Product appointment types - starts empty for new coach accounts
+  const [appointmentTypes, setAppointmentTypes] = useState<ProductAppointmentTypeConfig[]>([]);
 
   const [confirmationTemplate, setConfirmationTemplate] = useState(
     'Perfect 😊 Your {{title}} is booked!\n\n' +
@@ -132,6 +77,8 @@ export function GoogleCalendarConfig() {
 
   const [hasStoredKey, setHasStoredKey] = useState(false);
   const [serviceAccountEmail, setServiceAccountEmail] = useState<string | null>(null);
+  const [oauthEmail, setOauthEmail] = useState<string | null>(null);
+  const [connectingOauth, setConnectingOauth] = useState(false);
   const [bookings, setBookings] = useState<CalendarBooking[]>([]);
   const [loadingBookings, setLoadingBookings] = useState(false);
 
@@ -146,6 +93,10 @@ export function GoogleCalendarConfig() {
     try {
       setLoading(true);
       const res = await fetch('/api/calendar/config');
+      if (!res.ok) {
+        console.warn(`Failed to load Google Calendar config: HTTP ${res.status}`);
+        return;
+      }
       const data: GoogleCalendarConfigSafe = await res.json();
 
       if (data.configured) {
@@ -165,6 +116,7 @@ export function GoogleCalendarConfig() {
         }
         setHasStoredKey(Boolean(data.has_key));
         setServiceAccountEmail(data.service_account_email || null);
+        setOauthEmail(data.oauth_email || null);
       }
     } catch (err) {
       console.error('Failed to load Google Calendar config:', err);
@@ -177,6 +129,9 @@ export function GoogleCalendarConfig() {
     try {
       setLoadingBookings(true);
       const res = await fetch('/api/calendar/bookings?limit=10');
+      if (!res.ok) {
+        return;
+      }
       const data = await res.json();
       if (Array.isArray(data.bookings)) {
         setBookings(data.bookings);
@@ -284,6 +239,7 @@ export function GoogleCalendarConfig() {
       toast.success('Google Calendar disconnected');
       setHasStoredKey(false);
       setServiceAccountEmail(null);
+      setOauthEmail(null);
       setServiceAccountKey('');
       setIsActive(false);
     } catch (err: unknown) {
@@ -291,6 +247,26 @@ export function GoogleCalendarConfig() {
       toast.error(msg);
     } finally {
       setDisconnecting(false);
+    }
+  }
+
+  async function handleConnectOauth() {
+    try {
+      setConnectingOauth(true);
+      const res = await fetch('/api/calendar/auth', {
+        headers: { Accept: 'application/json' },
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        toast.error(data.error || 'Failed to start Google OAuth connection');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(`Could not initiate Google connection: ${msg}`);
+    } finally {
+      setConnectingOauth(false);
     }
   }
 
@@ -390,7 +366,7 @@ export function GoogleCalendarConfig() {
               <div className="mt-3 space-y-2 border-t border-border/40 pt-3 text-xs text-muted-foreground">
                 <ol className="list-inside list-decimal space-y-1.5">
                   <li>
-                    <span className="font-semibold text-foreground">Intent & Product Detection</span>: Inbound messages are evaluated for product interest (Abacus, GTC, Rubik&apos;s, etc.) and intent.
+                    <span className="font-semibold text-foreground">Intent & Product Detection</span>: Inbound messages are evaluated for your configured services and booking intent.
                   </li>
                   <li>
                     <span className="font-semibold text-foreground">Required Fields Gate</span>: AI Agent collects missing fields (Customer Name, Email, Preferred Slot, Child Age) without duplicate questions.
@@ -422,38 +398,142 @@ export function GoogleCalendarConfig() {
             <CardTitle className="text-base font-semibold">A. Calendar Connection & Working Hours</CardTitle>
           </div>
           <CardDescription className="text-sm">
-            Provide your Google Service Account JSON key and schedule boundaries. Credentials are encrypted at rest with AES-256-GCM.
+            Choose your connection method and configure schedule boundaries. Credentials are encrypted at rest with AES-256-GCM.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          {/* Service Account Key Input */}
+          {/* Auth Method Selector */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="serviceAccountKey" className="text-sm font-medium">
-                Google Service Account JSON Key
-              </Label>
-              {hasStoredKey && (
-                <span className="text-xs text-emerald-600 dark:text-emerald-400">
-                  ✓ Credentials configured
+            <Label className="text-sm font-medium">Authentication Method</Label>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setAuthType('oauth')}
+                className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-all ${
+                  authType === 'oauth'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                    : 'border-border/60 hover:border-border'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-medium text-sm">
+                  <span>Google Account (OAuth 2.0)</span>
+                  <Badge variant="secondary" className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    Google Meet
+                  </Badge>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Connect your own Google Account. Generates Google Meet video links and dispatches attendee invites.
                 </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAuthType('service_account')}
+                className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-all ${
+                  authType === 'service_account'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                    : 'border-border/60 hover:border-border'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-medium text-sm">
+                  <span>Google Service Account</span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Headless server-to-server connection using a JSON Service Account key.
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {authType === 'oauth' ? (
+            /* OAuth 2.0 Connection View */
+            <div className="space-y-3">
+              {hasStoredKey && (oauthEmail || authType === 'oauth') ? (
+                <div className="flex flex-col gap-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      <span className="font-semibold text-foreground">Connected Google Account:</span>
+                      <code className="truncate rounded bg-background px-2 py-0.5 font-mono text-xs font-semibold">
+                        {oauthEmail || 'Connected via OAuth'}
+                      </code>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={connectingOauth}
+                      onClick={handleConnectOauth}
+                      className="h-8 gap-1.5 text-xs"
+                    >
+                      {connectingOauth ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      )}
+                      Reconnect Account
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    ✓ Google Meet links and automatic attendee email invitations are fully supported.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border/80 bg-muted/20 p-6 text-center">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <Video className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-semibold">Connect your Google Calendar</h4>
+                    <p className="max-w-sm text-xs text-muted-foreground">
+                      Authorize Lead Pilot to access your calendar and automatically generate Google Meet video links for bookings.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={handleConnectOauth}
+                    disabled={connectingOauth}
+                    className="gap-2"
+                  >
+                    {connectingOauth ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ExternalLink className="h-4 w-4" />
+                    )}
+                    Sign in with Google
+                  </Button>
+                </div>
               )}
             </div>
-            <Textarea
-              id="serviceAccountKey"
-              value={serviceAccountKey}
-              onChange={(e) => setServiceAccountKey(e.target.value)}
-              placeholder={
-                hasStoredKey
-                  ? '•••••••••••••••••••••••••••••••••••••••••••••••••••••••••• (Paste new JSON to replace)'
-                  : '{\n  "type": "service_account",\n  "project_id": "...",\n  "private_key": "...",\n  "client_email": "..."\n}'
-              }
-              rows={4}
-              className="font-mono text-xs"
-            />
-            <p className="text-xs text-muted-foreground">
-              Paste the service account JSON key from Google Cloud Console &rarr; Service Accounts &rarr; Keys.
-            </p>
-          </div>
+          ) : (
+            /* Service Account Key Input */
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="serviceAccountKey" className="text-sm font-medium">
+                  Google Service Account JSON Key
+                </Label>
+                {hasStoredKey && (
+                  <span className="text-xs text-emerald-600 dark:text-emerald-400">
+                    ✓ Credentials configured
+                  </span>
+                )}
+              </div>
+              <Textarea
+                id="serviceAccountKey"
+                value={serviceAccountKey}
+                onChange={(e) => setServiceAccountKey(e.target.value)}
+                placeholder={
+                  hasStoredKey
+                    ? '•••••••••••••••••••••••••••••••••••••••••••••••••••••••••• (Paste new JSON to replace)'
+                    : '{\n  "type": "service_account",\n  "project_id": "...",\n  "private_key": "...",\n  "client_email": "..."\n}'
+                }
+                rows={4}
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                Paste the service account JSON key from Google Cloud Console &rarr; Service Accounts &rarr; Keys.
+              </p>
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-2">
             {/* Calendar ID */}
@@ -603,8 +683,13 @@ export function GoogleCalendarConfig() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Badge variant="secondary" className="font-mono text-xs">
-                      {item.productKey}
+                      {item.name || item.productKey}
                     </Badge>
+                    {item.meetingMode && (
+                      <Badge variant="outline" className="text-[10px]">
+                        {item.meetingMode.replace(/_/g, ' ')}
+                      </Badge>
+                    )}
                     <span className="text-xs text-muted-foreground">
                       Assigned to: <strong className="text-foreground">{item.teamName}</strong>
                     </span>
@@ -621,7 +706,7 @@ export function GoogleCalendarConfig() {
                     <Input
                       value={item.appointmentType}
                       onChange={(e) => handleUpdateAppointmentType(index, { appointmentType: e.target.value })}
-                      placeholder="e.g. Free Abacus Demo"
+                      placeholder="e.g. Free Consultation"
                       className="h-8 text-xs"
                     />
                   </div>
@@ -648,7 +733,7 @@ export function GoogleCalendarConfig() {
                     <Input
                       value={item.eventTitleTemplate || `{{name}} - ${item.appointmentType}`}
                       onChange={(e) => handleUpdateAppointmentType(index, { eventTitleTemplate: e.target.value })}
-                      placeholder="e.g. {{name}} - Abacus Demo"
+                      placeholder="e.g. {{name}} - Consultation"
                       className="h-8 text-xs font-mono"
                     />
                   </div>
