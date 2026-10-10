@@ -36,6 +36,8 @@ export interface CalendarActionContext {
   email?: string | null;
   childAge?: number | null;
   customerName?: string;
+  parentName?: string;
+  childName?: string;
   timezone?: string;
   referenceDate?: Date;
   existingBookingId?: string;
@@ -211,6 +213,8 @@ export async function executeBookAppointment(
     email,
     childAge,
     customerName,
+    parentName,
+    childName,
     timezone,
   } = context;
 
@@ -231,7 +235,10 @@ export async function executeBookAppointment(
 
   const duration = resolvedConfig.durationMinutes;
   const rawTitle = resolvedConfig.eventTitleTemplate || `{{name}} - ${resolvedConfig.appointmentType}`;
-  const title = rawTitle.replace(/\{\{name\}\}/g, customerName || 'Customer').replace(/\{name\}/g, customerName || 'Customer');
+  const effectiveDisplayName = childName && (parentName || customerName)
+    ? `${parentName || customerName} (Child: ${childName})`
+    : parentName || customerName || 'Customer';
+  const title = rawTitle.replace(/\{\{name\}\}/g, effectiveDisplayName).replace(/\{name\}/g, effectiveDisplayName);
 
   try {
     const calConfig = await loadCalendarConfig(db, accountId);
@@ -253,6 +260,8 @@ export async function executeBookAppointment(
       configOwnerUserId,
       email: email || null,
       customerName,
+      parentName,
+      childName,
       childAge,
       preferredTimeText,
       bookedBy: 'ai',

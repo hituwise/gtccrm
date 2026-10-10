@@ -143,6 +143,43 @@ export async function retrieveKnowledge(
     } catch (err) {
       console.error('[ai knowledge] lexical retrieval failed:', err)
     }
+
+    // Secondary substantive keyword fallback if full-sentence query returned fewer results
+    if (picked.size < k) {
+      const STOPWORDS = new Set([
+        'the', 'and', 'for', 'that', 'this', 'with', 'you', 'your', 'are', 'was',
+        'can', 'could', 'would', 'will', 'have', 'has', 'had', 'what', 'when',
+        'where', 'which', 'who', 'how', 'why', 'want', 'please', 'tell', 'about',
+        'from', 'some', 'there', 'here', 'into', 'just', 'like', 'than', 'then',
+        'out', 'get', 'give', 'help', 'know',
+      ]);
+      const words = query
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+
+      if (words.length > 0) {
+        const keyQuery = words.slice(0, 3).join(' ');
+        if (keyQuery && keyQuery !== query.toLowerCase().trim()) {
+          try {
+            const { data, error } = await db.rpc('match_ai_knowledge_fts', {
+              p_account_id: accountId,
+              p_query: keyQuery,
+              p_match_count: k,
+            });
+            if (!error && Array.isArray(data)) {
+              for (const row of data as MatchRow[]) {
+                if (picked.size >= k) break;
+                if (!picked.has(row.id)) picked.set(row.id, row.content);
+              }
+            }
+          } catch {
+            // non-fatal
+          }
+        }
+      }
+    }
   }
 
   return Array.from(picked.values()).slice(0, k)

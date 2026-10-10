@@ -391,7 +391,10 @@ export interface DetectedIntents {
   requestedDateText?: string | null;
   requestedTimeText?: string | null;
   email?: string | null;
+  noEmailExplicitlyStated?: boolean;
   childAge?: number | null;
+  childName?: string | null;
+  parentName?: string | null;
   customerType?: string;
   painPoint?: string;
   isHumanHandoffRequested: boolean;

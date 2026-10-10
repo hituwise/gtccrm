@@ -190,6 +190,8 @@ export interface ExecuteBookingArgs {
   configOwnerUserId?: string;
   email?: string | null;
   customerName?: string;
+  parentName?: string;
+  childName?: string;
   childAge?: number | null;
   preferredTimeText?: string;
   bookedBy?: BookedBy;
@@ -353,9 +355,22 @@ export async function executeDemoBooking(
     .eq('id', contactId)
     .maybeSingle();
 
-  const contactName = args.customerName || contact?.name || 'Customer';
+  const parentName = args.parentName || args.customerName || contact?.name || 'Customer';
+  const childName = args.childName;
+  const contactName = childName && parentName && !parentName.includes(childName)
+    ? `${parentName} (Child: ${childName})`
+    : parentName;
   const contactPhone = contact?.phone || '';
   const effectiveEmail = email || contact?.email || null;
+
+  const descDetails = [
+    `Demo Call booked via LeadPilot WhatsApp CRM.`,
+    `Parent / Contact: ${parentName}`,
+    childName ? `Child: ${childName}${args.childAge ? ` (Age: ${args.childAge})` : ''}` : null,
+    `Phone: ${contactPhone}`,
+    effectiveEmail ? `Email: ${effectiveEmail}` : `Email: None provided (added to calendar)`,
+  ].filter(Boolean).join('\n');
+  const meetingDescription = descDetails;
 
   // 2. Fetch Google Calendar Config
   const calConfig = await loadCalendarConfig(db, accountId);
@@ -393,7 +408,7 @@ export async function executeDemoBooking(
     manualTitle ||
     productConfig?.eventTitleTemplate ||
     calConfig?.default_meeting_title ||
-    'LeadPilot Demo Call: {{name}}';
+    '{{name}} - Demo';
 
   if (titleBase.includes('{{name}}') || titleBase.includes('{name}')) {
     titleBase = titleBase.replace(/\{\{name\}\}/g, contactName).replace(/\{name\}/g, contactName);
@@ -434,9 +449,9 @@ export async function executeDemoBooking(
     try {
       googleResult = await createGoogleCalendarBooking(calConfig!, {
         title: meetingTitle,
-        description: `Demo Call booked via LeadPilot WhatsApp CRM.\nContact: ${contactName}\nPhone: ${contactPhone}${effectiveEmail ? `\nEmail: ${effectiveEmail}` : ''}`,
+        description: meetingDescription,
         attendeeEmail: effectiveEmail || '',
-        attendeeName: contactName,
+        attendeeName: parentName,
         startTime: slot.startTime,
         endTime: slot.endTime,
         timezone,
@@ -564,7 +579,7 @@ export async function executeDemoBooking(
     google_event_id: googleEventId || (meetingMode !== 'GOOGLE_MEET' ? `internal-${Date.now()}` : null),
     google_calendar_id: calConfig?.calendar_id || 'primary',
     title: meetingTitle,
-    description: `Booked via LeadPilot WhatsApp CRM for ${contactName}`,
+    description: meetingDescription,
     attendee_email: effectiveEmail || '',
     attendee_name: contactName,
     attendee_phone: contactPhone,
@@ -578,6 +593,9 @@ export async function executeDemoBooking(
     product_service_id: productConfig?.productServiceId || productServiceId || null,
     meeting_mode: actualEffectiveMeetingMode,
     metadata: {
+      parent_name: args.parentName || args.customerName || null,
+      child_name: args.childName || null,
+      child_age: args.childAge || null,
       preferred_time_input: preferredTimeText || null,
       google_calendar_synced: Boolean(googleEventId),
       external_event_id: googleEventId,

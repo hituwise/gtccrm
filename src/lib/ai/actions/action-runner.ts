@@ -77,6 +77,10 @@ export function formatDemoBookingConfirmation(args: {
   meetLink?: string | null;
   meetingMode?: MeetingLinkMode;
   isReschedule?: boolean;
+  customerName?: string;
+  parentName?: string;
+  childName?: string;
+  email?: string | null;
 }): string {
   const tz = args.timezone || 'Asia/Kolkata';
   const d = new Date(args.isoStartTime);
@@ -100,6 +104,14 @@ export function formatDemoBookingConfirmation(args: {
     `⏰ ${time} ${tzLabel}\n` +
     `⏱️ ${args.durationMinutes} minutes`;
 
+  const pName = args.parentName || args.customerName;
+  if (pName && !/^(?:there|customer|user)$/i.test(pName)) {
+    msg += `\n👤 Parent: ${pName}`;
+  }
+  if (args.childName) {
+    msg += `\n👦 Child: ${args.childName}`;
+  }
+
   const mode = args.meetingMode || 'GOOGLE_MEET';
 
   if (args.meetLink && args.meetLink.startsWith('http')) {
@@ -110,8 +122,10 @@ export function formatDemoBookingConfirmation(args: {
     } else {
       msg += `\n💻 Google Meet: ${args.meetLink}`;
     }
-  } else if (mode === 'NONE' || mode === 'MANUAL_FOLLOW_UP' || !args.meetLink) {
-    msg += `\n📞 We will call you directly at the scheduled time.`;
+  } else if (args.email && args.email.includes('@')) {
+    msg += `\n📧 Google Calendar invite sent to: ${args.email}`;
+  } else {
+    msg += `\n📅 Added to Google Calendar. We will connect with you at the scheduled time.`;
   }
 
   msg += `\n\nSee you there! 🎉`;
@@ -471,14 +485,28 @@ export async function runAiActionPipeline(
       }
     }
 
-    const effectiveEmail = intents.email || contactRecord?.email || activeBooking?.attendee_email;
-    const isPlaceholderName = (name?: string | null) =>
-      !name || /^(?:parent|customer|there|test|lead|user)$/i.test(name.trim());
+    const collected = extractConversationCollectedFields(messages, contactRecord);
 
-    const effectiveName =
-      (intents.explicitNameProvided && intents.customerName) ||
-      intents.customerName ||
-      (contactRecord?.name && !isPlaceholderName(contactRecord.name) ? contactRecord.name : null);
+    const isChildCourse =
+      effectiveProductConfig.category?.toLowerCase().includes('kid') ||
+      effectiveProductConfig.productServiceId === 'ABACUS_KIDS' ||
+      effectiveProductConfig.productServiceId === 'RUBIKS_CUBE' ||
+      Boolean(collected.childAge || intents.childAge) ||
+      collected.isChildCourse ||
+      /son|daughter|child|kid/i.test(inboundText) ||
+      messages.some((m) => m.role === 'user' && /son|daughter|child|kid/i.test(m.content));
+
+    const childAge = collected.childAge || intents.childAge || null;
+    const childName = collected.childName || intents.childName || null;
+    const parentName =
+      collected.parentName ||
+      (collected.explicitNameProvided ? collected.customerName : null) ||
+      (intents.explicitNameProvided ? intents.customerName : null) ||
+      null;
+
+    const effectiveEmail = collected.email || intents.email || contactRecord?.email || null;
+    const emailExplicitlyDeclined = Boolean(collected.noEmailExplicitlyStated || intents.noEmailExplicitlyStated);
+    const emailAlreadyAsked = collected.lastQuestionAsked === 'ASKED_EMAIL';
 
     const hasDate = Boolean(
       intents.requestedDateText ||
@@ -491,11 +519,25 @@ export async function runAiActionPipeline(
       (preferredTimeText && hasTimeSpecified(preferredTimeText))
     );
 
-    const reqFields = effectiveProductConfig.requiredFields || ['name', 'date', 'time'];
-    const requiresEmail = reqFields.includes('email');
-    const requiresName = reqFields.includes('name');
+    const isPlaceholderName = (name?: string | null) =>
+      !name || /^(?:parent|customer|there|test|lead|user|\+\d+)$/i.test(name.trim());
 
-    // Immediately persist customer email so it is never requested repeatedly
+    const hasExplicitChatName = Boolean(
+      parentName ||
+      childName ||
+      (collected.explicitNameProvided && collected.customerName) ||
+      (intents.explicitNameProvided && intents.customerName)
+    );
+
+    const hasVerifiedContactRecord = Boolean(
+      contactRecord?.name &&
+      !isPlaceholderName(contactRecord.name) &&
+      contactRecord?.email
+    );
+
+    const hasKnownName = hasExplicitChatName || hasVerifiedContactRecord;
+
+    // Immediately persist customer email if newly discovered
     if (effectiveEmail && contactRecord && contactRecord.email !== effectiveEmail) {
       await db
         .from('contacts')
@@ -504,24 +546,37 @@ export async function runAiActionPipeline(
     }
 
     if (!hasDate && !hasTime) {
-      const ageStr = intents.childAge ? ` for your ${intents.childAge}-year-old child` : '';
-      customerResponse =
-        `Wonderful 😊 We can arrange a ${effectiveProductConfig.durationMinutes}-minute ${effectiveProductConfig.appointmentType}${ageStr}.\n\n` +
-        `What day and time work best for you?`;
+      // Allow conversational flow to proceed via LLM & Knowledge Base
+      customerResponse = '';
     } else if (!hasDate) {
-      customerResponse = `Got it! Which day would work best for you?`;
+      customerResponse = `Got it! Which day would work best for the demo session?`;
     } else if (!hasTime) {
       customerResponse = `Got it! What time would work best for you?`;
-    } else if (requiresEmail && !effectiveEmail) {
-      customerResponse = `Great! What is the best email address to send the booking confirmation and invite to?`;
-    } else if (requiresName && !effectiveName) {
-      customerResponse = `Perfect 😊 What name should I use for the booking?`;
+    } else if (!hasKnownName) {
+      if (isChildCourse && !effectiveEmail) {
+        customerResponse =
+          `To schedule the demo on our calendar for ${preferredTimeText}, could you please share:\n\n` +
+          `1. Parent's name\n` +
+          `2. Child's name\n` +
+          `3. Email address (for the Google Calendar invite, or let us know if you'd like to book without email 😊)`;
+      } else {
+        customerResponse = `What name should I use for the booking?`;
+      }
+    } else if (effectiveProductConfig.requiredFields?.includes('email') && !effectiveEmail && !emailExplicitlyDeclined && !emailAlreadyAsked) {
+      customerResponse =
+        `Great! What is your email address so we can send the Google Calendar invite? (If you don't have an email, just reply "no email" and we will add the session to our calendar with your WhatsApp number!)`;
     } else {
       // ALL REQUIRED FIELDS PRESENT: Construct validated booking object & execute
-      if (effectiveName && contactRecord && contactRecord.name !== effectiveName) {
+      const effectiveAttendeeName =
+        parentName ||
+        collected.customerName ||
+        intents.customerName ||
+        (contactRecord?.name && !isPlaceholderName(contactRecord.name) ? contactRecord.name : 'Customer');
+
+      if (parentName && contactRecord && contactRecord.name !== parentName) {
         await db
           .from('contacts')
-          .update({ name: effectiveName, email: effectiveEmail, updated_at: new Date().toISOString() })
+          .update({ name: parentName, email: effectiveEmail, updated_at: new Date().toISOString() })
           .eq('id', contactId);
       }
 
@@ -549,7 +604,7 @@ export async function runAiActionPipeline(
             productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
             productConfig: effectiveProductConfig,
             preferredTimeText,
-            customerName: effectiveName || contactRecord?.name || 'there',
+            customerName: effectiveAttendeeName,
             timezone,
           });
 
@@ -568,6 +623,9 @@ export async function runAiActionPipeline(
               meetLink: reschedRes.meetLink,
               meetingMode: effectiveProductConfig.meetingMode,
               isReschedule: true,
+              parentName: parentName || effectiveAttendeeName,
+              childName: childName || undefined,
+              email: effectiveEmail,
             });
           } else {
             customerResponse =
@@ -585,8 +643,10 @@ export async function runAiActionPipeline(
             productConfig: effectiveProductConfig,
             preferredTimeText,
             email: effectiveEmail || null,
-            childAge: intents.childAge,
-            customerName: effectiveName || undefined,
+            childAge,
+            customerName: effectiveAttendeeName,
+            parentName: parentName || effectiveAttendeeName,
+            childName: childName || undefined,
             timezone,
           });
 
@@ -611,6 +671,9 @@ export async function runAiActionPipeline(
               timezone,
               meetLink: bookRes.meetLink,
               meetingMode: effectiveProductConfig.meetingMode,
+              parentName: parentName || effectiveAttendeeName,
+              childName: childName || undefined,
+              email: effectiveEmail,
             });
           } else if (bookRes.error?.includes('permission is disabled')) {
             const apptName = effectiveProductConfig.appointmentType || effectiveProductConfig.name || 'session';
@@ -755,14 +818,8 @@ export async function runAiActionPipeline(
     }
   }
 
-  // Fallback to conversational response if not set by action rules
-  if (!customerResponse) {
-    customerResponse =
-      `Thank you for reaching out! How can I best help you today?`;
-  }
-
   // Ensure customer response never contains internal commands or notes
-  const sanitizedResponse = sanitizeCustomerResponse(customerResponse);
+  const sanitizedResponse = sanitizeCustomerResponse(customerResponse || '');
 
   return {
     customerResponse: sanitizedResponse,

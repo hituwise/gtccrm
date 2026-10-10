@@ -5,9 +5,14 @@ import { hasDateSpecified, hasTimeSpecified } from '@/lib/calendar/date-parser';
 
 export interface CollectedCustomerFields {
   customerName?: string | null;
+  parentName?: string | null;
+  childName?: string | null;
+  explicitNameProvided?: boolean;
   email?: string | null;
+  noEmailExplicitlyStated?: boolean;
   phone?: string | null;
   childAge?: number | null;
+  isChildCourse?: boolean;
   preferredTimeText?: string | null;
   hasDate: boolean;
   hasTime: boolean;
@@ -84,8 +89,13 @@ export function extractConversationCollectedFields(
   contactRecord?: { name?: string | null; email?: string | null; phone?: string | null },
 ): CollectedCustomerFields {
   let email: string | null = contactRecord?.email || null;
-  let customerName: string | null = contactRecord?.name || null;
+  let customerName: string | null = null;
+  let parentName: string | null = null;
+  let childName: string | null = null;
+  let explicitNameProvided = false;
+  let noEmailExplicitlyStated = false;
   let childAge: number | null = null;
+  let isChildCourse = false;
   let preferredTimeText: string | null = null;
   let hasDate = false;
   let hasTime = false;
@@ -103,13 +113,89 @@ export function extractConversationCollectedFields(
         if (foundEmail) email = foundEmail;
       }
 
-      // Age extraction (e.g. "6 years old", "age 8")
+      // Check if user explicitly stated they do not have an email
+      if (/(?:no\s+email|without\s+email|don'?t\s+have\s+(?:an?\s+)?email|do\s+not\s+have\s+(?:an?\s+)?email|skip\s+email|not\s+having\s+email)/i.test(text)) {
+        noEmailExplicitlyStated = true;
+      }
+
+      // Age extraction (e.g. "6 years old", "age 8", "9 year son")
       if (!childAge) {
-        const ageMatch = text.match(/(?:my\s+(?:son|daughter|child|kid)\s+is\s+)?(\d{1,2})\s*(?:years?\s*old|yo|yr|yrs)/i) ||
+        const ageMatch =
+          text.match(/(?:my\s+(?:son|daughter|child|kid)\s+is\s+)?(\d{1,2})\s*(?:years?\s*old|yo|yr|yrs)/i) ||
+          text.match(/(?:(?:son|daughter|child|kid)\s+is\s+)(\d{1,2})/i) ||
+          text.match(/(\d{1,2})\s*year(?:\s*old)?\s*(?:son|daughter|child|kid)/i) ||
           text.match(/(?:age\s*:?\s*)(\d{1,2})/i);
         if (ageMatch) {
           const parsed = parseInt(ageMatch[1], 10);
-          if (parsed >= 3 && parsed <= 18) childAge = parsed;
+          if (parsed >= 3 && parsed <= 18) {
+            childAge = parsed;
+            isChildCourse = true;
+          }
+        }
+      }
+
+      // Check for child course markers
+      if (/(?:son|daughter|child|kid|children|abacus\s*kids|rubik)/i.test(text)) {
+        isChildCourse = true;
+      }
+
+      // Child Name Extraction
+      if (!childName) {
+        const childMatch =
+          text.match(/(?:child(?:'s)?|son(?:'s)?|daughter(?:'s)?|kid(?:'s)?)\s*(?:name)?\s*(?:is|:)\s*([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20})?)/i) ||
+          text.match(/(?:child|son|daughter):\s*([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20})?)/i) ||
+          text.match(/(?:his|her)\s+name\s+is\s+([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20})?)/i) ||
+          text.match(/(?:for\s+my\s+(?:son|daughter|child)\s+)([A-Za-z]{2,20})/i);
+
+        if (childMatch && !/^(?:demo|class|abacus|rubik|online|offline|morning|evening|tomorrow|today)$/i.test(childMatch[1].trim())) {
+          childName = childMatch[1].trim();
+        }
+      }
+
+      // Parent Name / Customer Name Extraction
+      if (!parentName && !explicitNameProvided) {
+        const parentMatch =
+          text.match(/(?:(?:parent(?:'s)?|my|father|mother)\s+)?name\s*(?:is|:)\s*([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20})?)/i) ||
+          text.match(/(?:parent):\s*([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20})?)/i) ||
+          text.match(/(?:i\s*am|this\s*is)\s+([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20})?)/i);
+
+        if (parentMatch && !/^(?:interested|parent|father|mother|ready|looking|here|booking)$/i.test(parentMatch[1].trim())) {
+          parentName = parentMatch[1].trim();
+          customerName = parentName;
+          explicitNameProvided = true;
+        } else {
+          // Check for "for Name" pattern (e.g. "for Hitendra")
+          const forMatch = text.match(/\bfor\s+([A-Z][a-z]{2,20})\b/);
+          if (forMatch && !/^(?:my|him|her|son|daughter|child|kid|children|demo|class|abacus|rubik|online|offline|booking)$/i.test(forMatch[1].trim())) {
+            parentName = forMatch[1].trim();
+            customerName = parentName;
+            explicitNameProvided = true;
+          }
+        }
+      }
+
+      // Pair Extraction (e.g. "Parent: Amit, Child: Aarav" or "Amit and Aarav")
+      if ((!parentName || !childName) && isChildCourse) {
+        const pairMatch =
+          text.match(/(?:1\.?\s*)?(?:parent(?:'s)?(?:\s*name)?\s*:?\s*)([A-Za-z]{2,20})\b[\s,;]+(?:2\.?\s*)?(?:child(?:'s)?(?:\s*name)?\s*:?\s*)([A-Za-z]{2,20})/i) ||
+          text.match(/\b([A-Z][a-z]{2,15})\s+(?:and|,)\s+([A-Z][a-z]{2,15})\b/);
+
+        if (pairMatch) {
+          const n1 = pairMatch[1].trim();
+          const n2 = pairMatch[2].trim();
+          if (
+            !/^(?:please|thank|hello|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(n1) &&
+            !/^(?:please|thank|hello|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(n2)
+          ) {
+            if (!parentName) {
+              parentName = n1;
+              customerName = n1;
+              explicitNameProvided = true;
+            }
+            if (!childName) {
+              childName = n2;
+            }
+          }
         }
       }
 
@@ -125,11 +211,15 @@ export function extractConversationCollectedFields(
     } else if (msg.role === 'assistant' && !lastQuestionAsked) {
       // Determine what the assistant previously asked
       const lower = text.toLowerCase();
-      if (lower.includes('email') || lower.includes('calendar invite') || lower.includes('best email')) {
+      if (lower.includes('child') && (lower.includes('name') || lower.includes('who is'))) {
+        lastQuestionAsked = 'ASKED_CHILD_NAME';
+      } else if (lower.includes('parent') && (lower.includes('name') || lower.includes('who is'))) {
+        lastQuestionAsked = 'ASKED_PARENT_NAME';
+      } else if (lower.includes('email') || lower.includes('calendar invite') || lower.includes('best email')) {
         lastQuestionAsked = 'ASKED_EMAIL';
       } else if (lower.includes('what day and time') || lower.includes('which day') || lower.includes('what time')) {
         lastQuestionAsked = 'ASKED_DATE_TIME';
-      } else if (lower.includes('what name') || lower.includes('your name')) {
+      } else if (lower.includes('what name') || lower.includes('your name') || lower.includes('may i know your name')) {
         lastQuestionAsked = 'ASKED_NAME';
       } else if (lower.includes('which one would you like') || lower.includes('we offer both')) {
         lastQuestionAsked = 'ASKED_SERVICE_SELECTION';
@@ -137,16 +227,23 @@ export function extractConversationCollectedFields(
     }
   }
 
-  // Filter placeholder contact names like "Customer", "Parent", "User"
-  if (customerName && /^(?:parent|customer|there|test|lead|user)$/i.test(customerName.trim())) {
-    customerName = null;
+  // Fallback to contactRecord name if no explicit in-chat name provided, but keep explicitNameProvided flag accurate
+  if (!customerName && contactRecord?.name) {
+    if (!/^(?:parent|customer|there|test|lead|user|\+\d+)$/i.test(contactRecord.name.trim())) {
+      customerName = contactRecord.name.trim();
+    }
   }
 
   return {
     customerName,
+    parentName,
+    childName,
+    explicitNameProvided,
     email,
+    noEmailExplicitlyStated,
     phone: contactRecord?.phone || null,
     childAge,
+    isChildCourse,
     preferredTimeText,
     hasDate,
     hasTime,

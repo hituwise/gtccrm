@@ -287,13 +287,18 @@ export function extractCustomerName(
   const trimmed = currentText.trim();
   const lower = trimmed.toLowerCase();
 
-  // 1. Explicit declaration: "My name is Hitendra", "I am Hitendra", "Name: Hitendra", "This is Hitendra", "Hitendra here"
+  // 1. Explicit declaration: "My name is Hitendra", "I am Hitendra", "Name: Hitendra", "This is Hitendra", "Hitendra here", "for Hitendra"
   const m1 = trimmed.match(/(?:my name is|i am|i'm|name is|this is|call me|name:?)\s+([A-Za-z\s.'-]{2,30})/i);
   if (m1) {
     const raw = m1[1].replace(/[.,!?;:]+$/, '').trim();
     if (!/^(?:a|the|an|ready|interested|booking|demo|call)$/i.test(raw)) {
       return { name: raw, isExplicit: true };
     }
+  }
+
+  const mFor = trimmed.match(/\bfor\s+([A-Z][a-z]{2,25})\b/);
+  if (mFor && !/^(?:my|him|her|son|daughter|child|kid|children|demo|class|abacus|rubik|online|offline|booking)$/i.test(mFor[1])) {
+    return { name: mFor[1].trim(), isExplicit: true };
   }
 
   // 2. Direct name reply: If assistant recently asked for name

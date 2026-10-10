@@ -213,8 +213,8 @@ export function normalizeTenantProduct(raw: Record<string, unknown>): TenantProd
     productKey: productServiceId,
     tagName: tags.interestTag || legacyTagName,
     ctaType: raw.ctaType ? (raw.ctaType as TenantProductConfig['ctaType']) : 'Demo',
-    teamName: raw.teamName ? String(raw.teamName) : assignmentRules.teamName || 'General',
-    assignedAgentId: raw.assignedAgentId ? String(raw.assignedAgentId) : assignmentRules.assignedAgentId || null,
+    teamName: raw.teamName ? String(raw.teamName) : typeof assignmentRules.teamName === 'string' ? assignmentRules.teamName : 'General',
+    assignedAgentId: raw.assignedAgentId ? String(raw.assignedAgentId) : typeof assignmentRules.assignedAgentId === 'string' ? assignmentRules.assignedAgentId : null,
   };
 }
 

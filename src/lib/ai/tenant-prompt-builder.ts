@@ -100,11 +100,11 @@ export async function buildTenantAiSystemPrompt(
   // 3. Scheduling & Meeting Guidelines
   parts.push(
     `### Scheduling & Booking Rules:\n` +
-    `- When a customer wants to schedule, confirm their preferred day and time.\n` +
-    `- Collect their name and any required details.\n` +
-    `- If email is requested, explain that the calendar invite will be sent to their email.\n` +
+    `- For kids/children programs: warmly explain the course benefits using the Knowledge Base and Configured Services. When the customer wants to schedule, confirm their preferred day & time, and ask for: 1. Parent's name, 2. Child's name, 3. Email ID (for Google Calendar invite, or note that we can add to calendar with WhatsApp number if they don't have an email).\n` +
+    `- For adult or business services: ask for their name, preferred day & time, and email ID (or note we can book without email if preferred).\n` +
+    `- Once preferred date, time, and attendee name are provided, our integrated system automatically schedules the session on Google Calendar.\n` +
     `- NEVER invent or promise an unverified Google Meet or Zoom link unless confirmed by the booking system.\n` +
-    `- If the customer asks about class or batch timings, reply strictly using the schedule listed above. If no schedule is listed, state that our team will confirm the upcoming timings shortly.`
+    `- If the customer asks about curriculum, age suitability, fees, or class/batch timings, reply strictly using the Knowledge Base excerpts and Configured Services.`
   );
 
   // 4. FAQs and Policies
