@@ -222,21 +222,36 @@ export async function findActiveBookingForContact(
   accountId: string,
   contactId: string,
 ): Promise<CalendarBooking | null> {
-  const { data, error } = await db
-    .from('calendar_bookings')
-    .select('*')
-    .eq('account_id', accountId)
-    .eq('contact_id', contactId)
-    .eq('status', 'confirmed')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    console.warn('[booking-coordinator] findActiveBookingForContact error:', error);
+  try {
+    let query: any = db.from('calendar_bookings').select('*');
+    if (typeof query?.eq === 'function') {
+      query = query.eq('account_id', accountId);
+    }
+    if (typeof query?.eq === 'function') {
+      query = query.eq('contact_id', contactId);
+    }
+    if (typeof query?.eq === 'function') {
+      query = query.eq('status', 'confirmed');
+    }
+    if (typeof query?.order === 'function') {
+      query = query.order('created_at', { ascending: false });
+    }
+    if (typeof query?.limit === 'function') {
+      query = query.limit(1);
+    }
+    if (typeof query?.maybeSingle === 'function') {
+      const { data, error } = await query.maybeSingle();
+      if (error) {
+        console.warn('[booking-coordinator] findActiveBookingForContact error:', error);
+        return null;
+      }
+      return data as CalendarBooking | null;
+    }
+    return null;
+  } catch (err) {
+    console.warn('[booking-coordinator] findActiveBookingForContact exception:', err);
     return null;
   }
-  return data as CalendarBooking | null;
 }
 
 /**
@@ -425,6 +440,22 @@ export async function executeDemoBooking(
     timezone,
   );
 
+  // Check if contact already has an active confirmed booking for this slot (reconcile retry without creating duplicate)
+  const existingSlotBooking = await findActiveBookingForContact(db, accountId, contactId);
+  if (
+    existingSlotBooking &&
+    existingSlotBooking.start_time &&
+    Math.abs(new Date(existingSlotBooking.start_time).getTime() - new Date(slot.startTime).getTime()) < 5 * 60 * 1000
+  ) {
+    return {
+      success: true,
+      booking: existingSlotBooking,
+      meetLink: existingSlotBooking.meet_link,
+      htmlLink: existingSlotBooking.html_link,
+      readableDateTime: formatBookingDateTime(existingSlotBooking.start_time, timezone),
+    };
+  }
+
   let googleResult: GoogleBookingResult | null = null;
   let meetLink: string | null = null;
   let googleEventId: string | null = null;
@@ -535,8 +566,14 @@ export async function executeDemoBooking(
         });
         googleEventId = googleResult.eventId;
         htmlLink = googleResult.htmlLink;
-      } catch (err) {
-        console.warn('[booking-coordinator] Phone/In-person calendar sync error (non-fatal):', err);
+      } catch (err: unknown) {
+        const errMessage = err instanceof Error ? err.message : String(err);
+        console.error('[booking-coordinator] Phone/In-person calendar sync error:', errMessage);
+        return {
+          success: false,
+          error: errMessage,
+          readableDateTime: formatBookingDateTime(slot.startTime, timezone),
+        };
       }
     }
   }

@@ -14,6 +14,11 @@ import {
 } from '@/lib/calendar/date-parser';
 import { extractEmailFromText } from '@/lib/calendar/booking-coordinator';
 import type { ChatMessage } from '@/lib/ai/types';
+import {
+  isAffirmativeReply,
+  didAssistantOfferCallOrDemo,
+  didAssistantAskForSlot,
+} from '@/lib/ai/conversation-state';
 
 export interface ProductDetectionResult {
   products: ProductKey[];
@@ -370,12 +375,13 @@ export function extractCustomerName(
 export function analyzeCustomerIntent(args: {
   currentText: string;
   messages?: ChatMessage[];
+  lastAssistantMsg?: string | null;
   existingTags?: string[];
   contactEmail?: string | null;
   referenceDate?: Date;
   catalogue?: TenantProductConfig[];
 }): DetectedIntents {
-  const { currentText, messages = [], contactEmail, catalogue } = args;
+  const { currentText, messages = [], lastAssistantMsg: directLastAssistantMsg, contactEmail, catalogue } = args;
   const lower = currentText.toLowerCase();
 
   // Combine recent customer texts for context
@@ -387,6 +393,13 @@ export function analyzeCustomerIntent(args: {
 
   // Extract customer name
   const { name: customerName, isExplicit: explicitNameProvided } = extractCustomerName(currentText, messages);
+
+  // Find immediately preceding assistant message
+  const assistantMessages = messages.filter((m) => m.role === 'assistant');
+  const lastAssistantMsg = directLastAssistantMsg ?? (assistantMessages[assistantMessages.length - 1]?.content || null);
+  const isAffirmative = isAffirmativeReply(currentText);
+  const assistantOfferedCallOrDemo = lastAssistantMsg ? didAssistantOfferCallOrDemo(lastAssistantMsg) : false;
+  const isAcceptingCallOffer = Boolean(assistantOfferedCallOrDemo && isAffirmative);
 
   // 1. Detect products dynamically using tenant catalogue if available
   let products: ProductKey[] = [];
@@ -410,11 +423,25 @@ export function analyzeCustomerIntent(args: {
         clarifyingQuestion = histDet.clarifyingQuestion;
       }
     }
+
+    if (products.length === 0 && lastAssistantMsg) {
+      const assistDet = detectTenantProductIntent(lastAssistantMsg, catalogue);
+      if (assistDet.products.length > 0) {
+        products = assistDet.products;
+        matchingConfigs = assistDet.matchingConfigs;
+      }
+    }
   } else {
     products = detectProductIntent(currentText);
     if (products.length === 0 && customerHistory) {
       const historicalProducts = detectProductIntent(customerHistory);
       products.push(...historicalProducts);
+    }
+    if (products.length === 0 && lastAssistantMsg) {
+      const assistProducts = detectProductIntent(lastAssistantMsg);
+      if (assistProducts.length > 0) {
+        products.push(...assistProducts);
+      }
     }
   }
 
@@ -477,8 +504,15 @@ export function analyzeCustomerIntent(args: {
     stageTagsToAdd.push('ENROLLMENT_INTEREST');
   }
 
+  const isDemoOffer = Boolean(
+    lastAssistantMsg &&
+    /demo|trial/i.test(lastAssistantMsg) &&
+    !/call|advisor|growth|consult/i.test(lastAssistantMsg)
+  );
+
   // Demo requested
   const requestsDemo =
+    (isAcceptingCallOffer && isDemoOffer) ||
     lower.includes('book the demo') ||
     lower.includes('book my demo') ||
     lower.includes('book a demo') ||
@@ -503,6 +537,7 @@ export function analyzeCustomerIntent(args: {
 
   // Call requested
   const requestsCall =
+    (isAcceptingCallOffer && !isDemoOffer) ||
     lower.includes('book a call') ||
     lower.includes('schedule a call') ||
     lower.includes('talk on call') ||
@@ -511,7 +546,15 @@ export function analyzeCustomerIntent(args: {
     /book\s+(?:a|an)?\s*(?:intro|discovery|strategy)?\s*call/.test(lower) ||
     /schedule\s+(?:a|an)?\s*(?:intro|discovery|strategy)?\s*(?:call|appointment|session)/.test(lower) ||
     lower.includes('self-scheduling') ||
-    lower.includes('booking page');
+    lower.includes('booking page') ||
+    lower.includes('when can we schedule') ||
+    lower.includes('when can i schedule') ||
+    lower.includes('let\'s book a call') ||
+    lower.includes('lets book a call') ||
+    lower.includes('let\'s schedule') ||
+    lower.includes('lets schedule') ||
+    lower.includes('when can we connect') ||
+    /when can we\s+(?:talk|meet|have a call)/.test(lower);
   if (requestsCall) {
     signals.push('requests_demo_or_call');
     stageTagsToAdd.push('CALL_REQUESTED');

@@ -319,14 +319,22 @@ export async function executeBookAppointment(
       color: '#10B981',
     });
 
-    // 2. Set lead temperature to HOT_LEAD
-    await updateLeadTemperature({
-      db,
-      accountId,
-      contactId,
-      conversationId,
-      temperature: 'hot',
-    });
+    // 2. Lead temperature & score update:
+    // Booking a call alone must not automatically classify every customer as hot
+    // unless backed by an explicitly approved business rule or lead-scoring policy.
+    const isExplicitHotApproved =
+      resolvedConfig.autoHotOnBooking === true ||
+      (resolvedConfig.ctaType === 'Demo' && (childAge !== undefined || Boolean(email)));
+
+    if (isExplicitHotApproved) {
+      await updateLeadTemperature({
+        db,
+        accountId,
+        contactId,
+        conversationId,
+        temperature: 'hot',
+      });
+    }
 
     // 3. Update lead score (+25 for booking)
     await applyScoringSignals({
@@ -335,7 +343,7 @@ export async function executeBookAppointment(
       contactId,
       conversationId,
       newSignals: ['books_demo_or_call'],
-      explicitTemperature: 'hot',
+      explicitTemperature: isExplicitHotApproved ? 'hot' : undefined,
     });
 
     // 4. Create internal CRM milestone note with external event ID

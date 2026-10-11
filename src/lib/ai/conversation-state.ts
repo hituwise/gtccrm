@@ -2,6 +2,30 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { TenantProductConfig, TenantBusinessProfile } from '@/lib/ai/actions/types';
 import { extractEmailFromText } from '@/lib/calendar/booking-coordinator';
 import { hasDateSpecified, hasTimeSpecified } from '@/lib/calendar/date-parser';
+import { logAiAction } from '@/lib/ai/actions/action-logger';
+
+export type ConversationBookingState =
+  | 'INITIAL'
+  | 'OFFERED_CALL_OR_DEMO'
+  | 'AWAITING_PREFERRED_SLOT'
+  | 'AWAITING_CUSTOMER_DETAILS'
+  | 'AWAITING_EMAIL'
+  | 'BOOKED'
+  | 'HANDOFF';
+
+export interface PersistedConversationState {
+  state: ConversationBookingState;
+  productKey?: string | null;
+  productServiceId?: string | null;
+  appointmentType?: string | null;
+  preferredDateText?: string | null;
+  preferredTimeText?: string | null;
+  parsedStartTime?: string | null;
+  customerName?: string | null;
+  email?: string | null;
+  timezone?: string | null;
+  updatedAt?: string;
+}
 
 export interface CollectedCustomerFields {
   customerName?: string | null;
@@ -18,6 +42,9 @@ export interface CollectedCustomerFields {
   hasTime: boolean;
   selectedProductId?: string | null;
   lastQuestionAsked?: string | null;
+  conversationState?: ConversationBookingState;
+  assistantOfferedCall?: boolean;
+  customerAcceptedCall?: boolean;
 }
 
 const SCHEDULE_KEYWORDS = [
@@ -78,6 +105,76 @@ export function formatScheduleResponse(
     `Thank you for asking about the schedule for ${serviceName}. ` +
     `Our team will confirm the upcoming batch timings and available slots with you shortly! ` +
     `What day or time works best for your schedule in the meantime?`
+  );
+}
+
+/**
+ * Detects whether the customer is giving an affirmative response.
+ * Handles standalone affirmatives ("yes", "sure", "okay") and contextual affirmatives
+ * ("yes please", "yes when can we schedule", "when can we schedule", "let's book a call").
+ */
+export function isAffirmativeReply(text: string): boolean {
+  const clean = text.toLowerCase().trim().replace(/[.,!?;:]+$/, '').trim();
+  // Standalone affirmatives
+  if (/^(?:yes|yes please|yes pls|yeah|yep|yup|sure|sure thing|sure please|okay|ok|okay please|ok please|definitely|absolutely|sounds good|let's do it|lets do it|go ahead|proceed|of course)$/i.test(clean)) {
+    return true;
+  }
+  // Yes / sure / ok followed by schedule / book / call / when
+  if (/^(?:yes|sure|okay|ok)\b.*(?:schedule|book|call|slot|time|when)/i.test(clean)) {
+    return true;
+  }
+  // "when can we schedule", "when can we connect", "when is it possible to schedule", "when can we book"
+  if (/^(?:when can we|when can i|how can we|how can i|when is it possible to|when do we)\s*(?:schedule|book|connect|talk|meet|have a call)/i.test(clean)) {
+    return true;
+  }
+  // "let's book a call", "lets schedule a call", "let's schedule", etc.
+  if (/\b(?:let'?s|lets|want to|would like to|ready to|can we)\s+(?:book|schedule|have a call|set up a call|proceed with (?:a |the )?call)\b/i.test(clean)) {
+    return true;
+  }
+  if (/^(?:schedule it|book it|yes book|yes schedule|book a call|schedule a call)$/i.test(clean)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Checks whether an assistant message was offering a call, demo, or appointment.
+ */
+export function didAssistantOfferCallOrDemo(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes('schedule a quick call') ||
+    lower.includes('schedule a call') ||
+    lower.includes('book a call') ||
+    lower.includes('book a quick demo') ||
+    lower.includes('book a demo') ||
+    lower.includes('book a free') ||
+    lower.includes('would you like to schedule') ||
+    lower.includes('would you like to book') ||
+    lower.includes('would you like to see a quick demo') ||
+    lower.includes('training advisor') ||
+    lower.includes('business growth call') ||
+    lower.includes('discovery call') ||
+    lower.includes('introductory call') ||
+    /would you like.*(?:call|demo|session)/i.test(lower) ||
+    /schedule a \d+-minute/i.test(lower) ||
+    /book a \d+-minute/i.test(lower)
+  );
+}
+
+/**
+ * Checks whether an assistant message was asking for preferred day or time.
+ */
+export function didAssistantAskForSlot(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes('what day and time') ||
+    lower.includes('which day') ||
+    lower.includes('what time') ||
+    lower.includes('preferred day') ||
+    lower.includes('convenient time') ||
+    lower.includes('what date') ||
+    lower.includes('what day or time')
   );
 }
 
@@ -209,7 +306,7 @@ export function extractConversationCollectedFields(
         if (msgHasTime) hasTime = true;
       }
     } else if (msg.role === 'assistant' && !lastQuestionAsked) {
-      // Determine what the assistant previously asked
+      // Determine what the assistant previously asked or offered
       const lower = text.toLowerCase();
       if (lower.includes('child') && (lower.includes('name') || lower.includes('who is'))) {
         lastQuestionAsked = 'ASKED_CHILD_NAME';
@@ -217,14 +314,31 @@ export function extractConversationCollectedFields(
         lastQuestionAsked = 'ASKED_PARENT_NAME';
       } else if (lower.includes('email') || lower.includes('calendar invite') || lower.includes('best email')) {
         lastQuestionAsked = 'ASKED_EMAIL';
-      } else if (lower.includes('what day and time') || lower.includes('which day') || lower.includes('what time')) {
+      } else if (didAssistantAskForSlot(text) || lower.includes('what day and time') || lower.includes('which day') || lower.includes('what time')) {
         lastQuestionAsked = 'ASKED_DATE_TIME';
       } else if (lower.includes('what name') || lower.includes('your name') || lower.includes('may i know your name')) {
         lastQuestionAsked = 'ASKED_NAME';
       } else if (lower.includes('which one would you like') || lower.includes('we offer both')) {
         lastQuestionAsked = 'ASKED_SERVICE_SELECTION';
+      } else if (didAssistantOfferCallOrDemo(text)) {
+        lastQuestionAsked = 'OFFERED_CALL';
       }
     }
+  }
+
+  // Check if assistant offered call and customer accepted
+  const assistantOfferedCall = lastQuestionAsked === 'OFFERED_CALL';
+  let customerAcceptedCall = false;
+  let conversationState: ConversationBookingState = 'INITIAL';
+
+  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')?.content;
+  if (assistantOfferedCall && lastUserMsg && isAffirmativeReply(lastUserMsg)) {
+    customerAcceptedCall = true;
+    conversationState = 'AWAITING_PREFERRED_SLOT';
+  } else if (lastQuestionAsked === 'ASKED_DATE_TIME') {
+    conversationState = 'AWAITING_PREFERRED_SLOT';
+  } else if (assistantOfferedCall) {
+    conversationState = 'OFFERED_CALL_OR_DEMO';
   }
 
   // Fallback to contactRecord name if no explicit in-chat name provided, but keep explicitNameProvided flag accurate
@@ -248,6 +362,9 @@ export function extractConversationCollectedFields(
     hasDate,
     hasTime,
     lastQuestionAsked,
+    conversationState,
+    assistantOfferedCall,
+    customerAcceptedCall,
   };
 }
 
@@ -294,4 +411,117 @@ export async function syncDiscoveredContactFields(
       console.warn('[conversation-state] syncDiscoveredContactFields non-fatal error:', err);
     }
   }
+}
+
+/**
+ * Persists an explicit state transition to the database (ai_action_logs).
+ */
+export async function persistConversationState(
+  db: SupabaseClient,
+  accountId: string,
+  contactId?: string | null,
+  conversationId?: string | null,
+  stateData?: Partial<PersistedConversationState>,
+): Promise<void> {
+  if (!conversationId) return;
+  try {
+    await logAiAction({
+      db,
+      accountId,
+      contactId,
+      conversationId,
+      action: 'STATE_TRANSITION',
+      details: {
+        ...stateData,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.warn('[conversation-state] persistConversationState non-fatal error:', err);
+  }
+}
+
+/**
+ * Loads the latest persisted conversation state from ai_action_logs.
+ */
+export async function getPersistedConversationState(
+  db: SupabaseClient,
+  conversationId: string,
+): Promise<PersistedConversationState | null> {
+  try {
+    const { data, error } = await db
+      .from('ai_action_logs')
+      .select('details, created_at')
+      .eq('conversation_id', conversationId)
+      .eq('action', 'STATE_TRANSITION')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.details) return null;
+    return data.details as PersistedConversationState;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deterministically derives the conversation booking state and product context
+ * from the transcript history and/or DB persisted state.
+ */
+export function deriveConversationState(
+  messages: Array<{ role: string; content: string }>,
+  persistedState?: PersistedConversationState | null,
+): PersistedConversationState {
+  let state: ConversationBookingState = persistedState?.state || 'INITIAL';
+  let productKey: string | null = persistedState?.productKey || null;
+  let appointmentType: string | null = persistedState?.appointmentType || null;
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant') {
+      const lower = msg.content.toLowerCase();
+      if (lower.includes('is booked') || lower.includes('has been rescheduled')) {
+        state = 'BOOKED';
+      } else if (didAssistantAskForSlot(msg.content)) {
+        state = 'AWAITING_PREFERRED_SLOT';
+      } else if (didAssistantOfferCallOrDemo(msg.content)) {
+        state = 'OFFERED_CALL_OR_DEMO';
+      }
+
+      if (lower.includes('gtc') || lower.includes('teacher training') || lower.includes('training advisor')) {
+        productKey = 'GTC';
+        appointmentType = 'GTC Training / Business Call';
+      } else if (lower.includes('abacus demo') || lower.includes('abacus mental math')) {
+        productKey = 'ABACUS_KIDS';
+        appointmentType = 'Free Abacus Demo';
+      } else if (lower.includes('rubik')) {
+        productKey = 'RUBIKS_CUBE';
+        appointmentType = "Rubik's Cube Demo";
+      } else if (lower.includes('growth call') || lower.includes('gold')) {
+        productKey = 'GOLD';
+        appointmentType = 'Gold Business Growth Call';
+      } else if (lower.includes('maa')) {
+        productKey = 'MAA';
+        appointmentType = 'MAA Product Demo';
+      } else if (lower.includes('lead pilot')) {
+        productKey = 'LEAD_PILOT';
+        appointmentType = 'Lead Pilot Demo / Call';
+      }
+    } else if (msg.role === 'user') {
+      if ((state === 'OFFERED_CALL_OR_DEMO' || state === 'INITIAL') && isAffirmativeReply(msg.content)) {
+        // If the immediately preceding assistant message offered a call/demo, advance to AWAITING_PREFERRED_SLOT
+        const priorAssistant = messages.slice(0, i).reverse().find((m) => m.role === 'assistant');
+        if (priorAssistant && didAssistantOfferCallOrDemo(priorAssistant.content)) {
+          state = 'AWAITING_PREFERRED_SLOT';
+        }
+      }
+    }
+  }
+
+  return {
+    state,
+    productKey,
+    appointmentType,
+  };
 }
