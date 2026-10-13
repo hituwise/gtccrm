@@ -60,6 +60,7 @@ vi.mock('@/lib/calendar/google-calendar', () => ({
     { startTime: '2026-10-12T14:00:00.000Z', endTime: '2026-10-12T14:30:00.000Z', humanText: '2:00 PM IST' },
   ]),
   testGoogleCalendarConnection: vi.fn().mockResolvedValue({ success: true }),
+  computeDeterministicCalendarEventId: vi.fn().mockReturnValue('mock-det-event-id'),
 }));
 
 describe('P0 Bug Fix: Geniplus AI GTC Scheduling & State Transitions', () => {
@@ -238,8 +239,8 @@ describe('P0 Bug Fix: Geniplus AI GTC Scheduling & State Transitions', () => {
     expect(res1.productKey).toBe('GTC');
     expect(res1.tagsAdded).toContain('GTC_INTEREST');
     expect(res1.tagsAdded).toContain('INTERESTED');
-    expect(res1.customerResponse).toContain('Teacher Training Course (GTC)');
-    expect(res1.customerResponse).toContain('Would you like to schedule a quick call with our training advisor?');
+    expect(res1.customerResponse).toContain('Teacher Training');
+    expect(res1.customerResponse).toContain('Would you like to schedule');
 
     // Turn 2: Customer responds "yes please"
     const turn2Msg = 'yes please';
@@ -265,7 +266,7 @@ describe('P0 Bug Fix: Geniplus AI GTC Scheduling & State Transitions', () => {
     // Crucial: Must acknowledge acceptance and ask for preferred day/time
     expect(res2.customerResponse).toMatch(/what day and time/i);
     // Crucial: Must NOT repeat the original GTC pitch
-    expect(res2.customerResponse).not.toContain('Teacher Training Course (GTC) equips you with complete training');
+    expect(res2.customerResponse).not.toContain('equips you with complete training');
   });
 
   // =========================================================================
@@ -328,7 +329,7 @@ describe('P0 Bug Fix: Geniplus AI GTC Scheduling & State Transitions', () => {
   it('4. Available slot → booking executes and confirmation occurs ONLY after booking succeeds', async () => {
     const messages = [
       { role: 'user', content: 'i want to know about abacus teacher training' },
-      { role: 'assistant', content: "That's great! Our Teacher Training Course (GTC) equips you with complete training and certification to start your own Abacus classes. Would you like to schedule a quick call with our training advisor?" },
+      { role: 'assistant', content: "Great! Our Abacus Teacher Training / GTC is designed to help you achieve your goals. Would you like to schedule a 30-minute GTC Training / Business Call?" },
       { role: 'user', content: 'yes please' },
       { role: 'assistant', content: "Wonderful! We'd be happy to arrange a quick call with our training advisor. What day and time work best for you?" },
       { role: 'user', content: 'Tomorrow at 10 AM' },
@@ -466,7 +467,7 @@ describe('P0 Bug Fix: Geniplus AI GTC Scheduling & State Transitions', () => {
     expect(step1Result.tagsAdded).toContain('GTC_INTEREST');
     expect(step1Result.tagsAdded).toContain('INTERESTED');
     expect(step1Result.tagsAdded).not.toContain('CALL_REQUESTED');
-    expect(step1Result.customerResponse).toContain('Teacher Training Course (GTC)');
+    expect(step1Result.customerResponse).toContain('Abacus Teacher Training');
 
     // State after Step 1 offer
     const messagesAfterStep1 = [

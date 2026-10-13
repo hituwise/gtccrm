@@ -216,6 +216,7 @@ export async function executeBookAppointment(
     parentName,
     childName,
     timezone,
+    referenceDate,
   } = context;
 
   const resolvedConfig =
@@ -268,9 +269,11 @@ export async function executeBookAppointment(
       manualTitle: title,
       manualDuration: duration,
       productConfig: resolvedConfig,
+      productKey,
       meetingMode: resolvedConfig.meetingMode,
       staticMeetingLink: resolvedConfig.meetingLink,
       timezone: tz,
+      referenceDate,
       sendWhatsAppConfirmation: false, // AI Agent coordinates response message
     });
 

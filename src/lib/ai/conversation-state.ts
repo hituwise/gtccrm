@@ -17,6 +17,7 @@ export interface PersistedConversationState {
   state: ConversationBookingState;
   productKey?: string | null;
   productServiceId?: string | null;
+  selectedProducts?: string[];
   appointmentType?: string | null;
   preferredDateText?: string | null;
   preferredTimeText?: string | null;
@@ -24,6 +25,9 @@ export interface PersistedConversationState {
   customerName?: string | null;
   email?: string | null;
   timezone?: string | null;
+  offeredSlots?: Array<{ startTime: string; endTime: string; humanText: string }>;
+  lastBotMessage?: string | null;
+  lastQuestionAsked?: string | null;
   updatedAt?: string;
 }
 
@@ -73,23 +77,49 @@ export function detectScheduleQuery(text: string): boolean {
   return SCHEDULE_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
+import { type DetectedLanguage } from './defaults';
+
 /**
  * Formats a factual, tenant-grounded response for schedule and timing queries.
- * If the tenant has configured working hours / availability days, it outputs them.
+ * If the tenant has configured working hours / availability days or a custom template,
+ * it formats according to the tenant's specifications in the customer's language.
  * If not configured, it politely informs the customer that the team will confirm
  * the upcoming batch timings, rather than hallucinating or inventing times.
  */
 export function formatScheduleResponse(
   product?: TenantProductConfig,
   profile?: TenantBusinessProfile,
+  language: DetectedLanguage = 'en',
 ): string {
+  if (product?.scheduleMessageTemplate && product.scheduleMessageTemplate.trim()) {
+    return product.scheduleMessageTemplate.trim();
+  }
+
   if (product && (product.workingHoursStart || product.availabilityDays?.length)) {
     const days = product.availabilityDays?.length
       ? product.availabilityDays.join(', ')
       : 'Monday to Saturday';
-    const hours = product.workingHoursStart && product.workingHoursEnd
-      ? `${product.workingHoursStart} to ${product.workingHoursEnd} (${product.timezone || profile?.timezone || 'IST'})`
-      : 'flexible batch slots throughout the week';
+    const hours =
+      product.workingHoursStart && product.workingHoursEnd
+        ? `${product.workingHoursStart} to ${product.workingHoursEnd} (${product.timezone || profile?.timezone || 'IST'})`
+        : 'flexible batch slots throughout the week';
+
+    if (language === 'gu') {
+      return (
+        `${product.name} માટે સમયપત્રક વિગતો અહીં છે:\n\n` +
+        `📅 દિવસો: ${days}\n` +
+        `⏰ સમય: ${hours}\n\n` +
+        `શું તમે આ કલાકો દરમિયાન સ્લોટ બુક કરવા માંગો છો?`
+      );
+    }
+    if (language === 'hi' || language === 'hinglish') {
+      return (
+        `${product.name} के लिए शेड्यूल विवरण यहाँ हैं:\n\n` +
+        `📅 दिन: ${days}\n` +
+        `⏰ समय: ${hours}\n\n` +
+        `क्या आप इस समय के दौरान एक स्लॉट बुक करना चाहेंगे?`
+      );
+    }
 
     return (
       `Here are the schedule details for ${product.name}:\n\n` +
@@ -101,6 +131,21 @@ export function formatScheduleResponse(
 
   // Missing or unconfigured schedule: DO NOT INVENT TIMINGS!
   const serviceName = product?.name || 'our classes';
+  if (language === 'gu') {
+    return (
+      `${serviceName} ના સમયપત્રક વિશે પૂછવા બદલ આભાર. ` +
+      `અમારી ટીમ આગામી બેચના સમય અને ઉપલબ્ધ સ્લોટની પુષ્ટિ ટૂંક સમયમાં કરશે! ` +
+      `તમારા માટે કયો દિવસ અથવા સમય સૌથી અનુકૂળ રહેશે?`
+    );
+  }
+  if (language === 'hi' || language === 'hinglish') {
+    return (
+      `${serviceName} के शेड्यूल के बारे में पूछने के लिए धन्यवाद। ` +
+      `हमारी टीम आगामी बैच के समय की पुष्टि आपसे जल्द ही करेगी! ` +
+      `आपके लिए कौन सा दिन या समय सबसे अच्छा रहेगा?`
+    );
+  }
+
   return (
     `Thank you for asking about the schedule for ${serviceName}. ` +
     `Our team will confirm the upcoming batch timings and available slots with you shortly! ` +
@@ -425,16 +470,19 @@ export async function persistConversationState(
 ): Promise<void> {
   if (!conversationId) return;
   try {
+    const existing = await getPersistedConversationState(db, conversationId);
+    const merged = {
+      ...(existing || {}),
+      ...(stateData || {}),
+      updatedAt: new Date().toISOString(),
+    };
     await logAiAction({
       db,
       accountId,
       contactId,
       conversationId,
       action: 'STATE_TRANSITION',
-      details: {
-        ...stateData,
-        updatedAt: new Date().toISOString(),
-      },
+      details: merged,
     });
   } catch (err) {
     console.warn('[conversation-state] persistConversationState non-fatal error:', err);
@@ -472,10 +520,12 @@ export async function getPersistedConversationState(
 export function deriveConversationState(
   messages: Array<{ role: string; content: string }>,
   persistedState?: PersistedConversationState | null,
+  catalogue?: TenantProductConfig[],
 ): PersistedConversationState {
   let state: ConversationBookingState = persistedState?.state || 'INITIAL';
   let productKey: string | null = persistedState?.productKey || null;
   let appointmentType: string | null = persistedState?.appointmentType || null;
+  let selectedProducts: string[] = persistedState?.selectedProducts || (productKey ? [productKey] : []);
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -489,24 +539,39 @@ export function deriveConversationState(
         state = 'OFFERED_CALL_OR_DEMO';
       }
 
-      if (lower.includes('gtc') || lower.includes('teacher training') || lower.includes('training advisor')) {
-        productKey = 'GTC';
-        appointmentType = 'GTC Training / Business Call';
-      } else if (lower.includes('abacus demo') || lower.includes('abacus mental math')) {
-        productKey = 'ABACUS_KIDS';
-        appointmentType = 'Free Abacus Demo';
-      } else if (lower.includes('rubik')) {
-        productKey = 'RUBIKS_CUBE';
-        appointmentType = "Rubik's Cube Demo";
-      } else if (lower.includes('growth call') || lower.includes('gold')) {
-        productKey = 'GOLD';
-        appointmentType = 'Gold Business Growth Call';
-      } else if (lower.includes('maa')) {
-        productKey = 'MAA';
-        appointmentType = 'MAA Product Demo';
-      } else if (lower.includes('lead pilot')) {
-        productKey = 'LEAD_PILOT';
-        appointmentType = 'Lead Pilot Demo / Call';
+      if (catalogue && catalogue.length > 0) {
+        for (const prod of catalogue) {
+          if (
+            lower.includes(prod.name.toLowerCase()) ||
+            lower.includes(prod.appointmentType.toLowerCase())
+          ) {
+            productKey = prod.productKey || prod.productServiceId;
+            appointmentType = prod.appointmentType;
+            if (!selectedProducts.includes(productKey)) selectedProducts.push(productKey);
+            break;
+          }
+        }
+      } else {
+        if (lower.includes('gtc') || lower.includes('teacher training') || lower.includes('training advisor')) {
+          productKey = 'GTC';
+          appointmentType = 'GTC Training / Business Call';
+        } else if (lower.includes('abacus demo') || lower.includes('abacus mental math')) {
+          productKey = 'ABACUS_KIDS';
+          appointmentType = 'Free Abacus Demo';
+        } else if (lower.includes('rubik')) {
+          productKey = 'RUBIKS_CUBE';
+          appointmentType = "Rubik's Cube Demo";
+        } else if (lower.includes('growth call') || lower.includes('gold')) {
+          productKey = 'GOLD';
+          appointmentType = 'Gold Business Growth Call';
+        } else if (lower.includes('maa')) {
+          productKey = 'MAA';
+          appointmentType = 'MAA Product Demo';
+        } else if (lower.includes('lead pilot')) {
+          productKey = 'LEAD_PILOT';
+          appointmentType = 'Lead Pilot Demo / Call';
+        }
+        if (productKey && !selectedProducts.includes(productKey)) selectedProducts.push(productKey);
       }
     } else if (msg.role === 'user') {
       if ((state === 'OFFERED_CALL_OR_DEMO' || state === 'INITIAL') && isAffirmativeReply(msg.content)) {
@@ -520,8 +585,10 @@ export function deriveConversationState(
   }
 
   return {
+    ...persistedState,
     state,
     productKey,
     appointmentType,
+    selectedProducts,
   };
 }

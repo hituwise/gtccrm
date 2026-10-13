@@ -153,7 +153,7 @@ export function parseBookingSlot(
   const childAge = extractChildAge(text);
 
   // 1. Check for ISO string first
-  const isoMatch = text.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:[+-]\d{2}:?\d{2}|Z)?/);
+  const isoMatch = text.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?/);
   if (isoMatch) {
     const d = new Date(isoMatch[0]);
     if (!isNaN(d.getTime())) {

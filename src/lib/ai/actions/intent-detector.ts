@@ -36,17 +36,35 @@ function cleanText(text: string): string {
 
 /**
  * Calculates a match score for a given product config against user text.
+ * Supports multilingual tenant keywords and aliases (Hindi, Gujarati, Hinglish, English),
+ * and uses dynamic catalogue uniqueness rather than rigid stopword dictionaries.
  */
-export function scoreProductMatch(text: string, product: TenantProductConfig): number {
+export function scoreProductMatch(
+  text: string,
+  product: TenantProductConfig,
+  catalogue?: TenantProductConfig[],
+): number {
   if (product.enabled === false) return 0;
 
   const lower = text.toLowerCase();
   const cleaned = ` ${cleanText(text)} `;
   let score = 0;
 
-  // 1. Check explicit keywords
-  if (Array.isArray(product.keywords) && product.keywords.length > 0) {
-    for (const kw of product.keywords) {
+  // Generic tenant-configurable negative keywords check
+  if (Array.isArray(product.negativeKeywords) && product.negativeKeywords.length > 0) {
+    for (const neg of product.negativeKeywords) {
+      const negLower = neg.toLowerCase().trim();
+      if (negLower && lower.includes(negLower)) {
+        return 0;
+      }
+    }
+  }
+  const allAliases = [
+    ...(Array.isArray(product.keywords) ? product.keywords : []),
+    ...(Array.isArray(product.aliases) ? product.aliases : []),
+  ];
+  if (allAliases.length > 0) {
+    for (const kw of allAliases) {
       const kwLower = kw.toLowerCase().trim();
       if (!kwLower) continue;
       if (lower.includes(kwLower)) {
@@ -60,11 +78,32 @@ export function scoreProductMatch(text: string, product: TenantProductConfig): n
   if (lower.includes(nameLower)) {
     score += 50;
   } else {
-    // Individual words of product name
-    const nameWords = cleanText(product.name).split(' ').filter((w) => w.length > 3);
-    for (const w of nameWords) {
+    // Check 2-word phrase matches in product name (e.g. "personal training")
+    const rawWords = cleanText(product.name).split(' ').filter(Boolean);
+    for (let i = 0; i < rawWords.length - 1; i++) {
+      const pair = `${rawWords[i]} ${rawWords[i + 1]}`;
+      if (lower.includes(pair)) {
+        score += 35;
+      }
+    }
+
+    // Individual words of product name with dynamic catalogue discrimination
+    for (const w of rawWords) {
+      if (w.length < 3) continue;
       if (cleaned.includes(` ${w} `)) {
-        score += 15;
+        // If catalogue is provided, check if word is unique to this product
+        if (catalogue && catalogue.length > 1) {
+          const matchingProds = catalogue.filter((p) => cleanText(p.name).split(' ').includes(w));
+          if (matchingProds.length === 1) {
+            // Unique word to this product in catalogue!
+            score += 25;
+          } else {
+            // Shared generic word across catalogue (e.g. "academy")
+            score += 5;
+          }
+        } else {
+          score += 15;
+        }
       }
     }
   }
@@ -78,7 +117,7 @@ export function scoreProductMatch(text: string, product: TenantProductConfig): n
   // 4. Check description & category
   if (product.description) {
     const descLower = product.description.toLowerCase();
-    // Common intent phrases in description (e.g. "more clients", "personal training", "brain development")
+    // Common intent phrases in description
     const descPhrases = descLower.split(/[,.;]/).map((p) => p.trim()).filter((p) => p.length > 5);
     for (const phrase of descPhrases) {
       if (lower.includes(phrase)) {
@@ -109,7 +148,7 @@ export function scoreProductMatch(text: string, product: TenantProductConfig): n
 
 /**
  * Dynamically detects product intent using the tenant's configured catalogue.
- * If ambiguous between multiple products, returns clarifying question.
+ * Supports short replies ('both', 'both of them') and never generates canned text.
  */
 export function detectTenantProductIntent(
   text: string,
@@ -123,10 +162,21 @@ export function detectTenantProductIntent(
     };
   }
 
+  const trimmed = text.trim();
+  const isBothQuery = /^(?:both|both of them|explore both|interested in both|tell me about both|all of them|all)$/i.test(trimmed);
+  if (isBothQuery) {
+    return {
+      products: catalogue.map((p) => p.productServiceId),
+      matchingConfigs: [...catalogue],
+      isAmbiguous: false,
+      clarifyingQuestion: undefined,
+    };
+  }
+
   const scored = catalogue
     .map((prod) => ({
       product: prod,
-      score: scoreProductMatch(text, prod),
+      score: scoreProductMatch(text, prod, catalogue),
     }))
     .filter((item) => item.score >= 20)
     .sort((a, b) => b.score - a.score);
@@ -142,15 +192,14 @@ export function detectTenantProductIntent(
   const topScore = scored[0].score;
   const topMatches = scored.filter((item) => item.score >= topScore * 0.75);
 
-  // If two distinct products have almost identical high score, flag ambiguity
+  // If multiple distinct products match closely, include all candidate products
+  // without hardcoding canned questions. Let LLM provide grounded comparison or guidance.
   if (topMatches.length >= 2 && topMatches[0].product.productServiceId !== topMatches[1].product.productServiceId) {
-    const p1 = topMatches[0].product.name;
-    const p2 = topMatches[1].product.name;
     return {
       products: topMatches.map((m) => m.product.productServiceId),
       matchingConfigs: topMatches.map((m) => m.product),
-      isAmbiguous: true,
-      clarifyingQuestion: `We offer both ${p1} and ${p2}. Which one would you like to explore?`,
+      isAmbiguous: false,
+      clarifyingQuestion: undefined,
     };
   }
 
@@ -418,10 +467,6 @@ export function analyzeCustomerIntent(args: {
       const histDet = detectTenantProductIntent(customerHistory, catalogue);
       products = histDet.products;
       matchingConfigs = histDet.matchingConfigs;
-      if (!isAmbiguousProduct && histDet.isAmbiguous) {
-        isAmbiguousProduct = true;
-        clarifyingQuestion = histDet.clarifyingQuestion;
-      }
     }
 
     if (products.length === 0 && lastAssistantMsg) {
@@ -703,25 +748,27 @@ export function analyzeCustomerIntent(args: {
     painPoint = top.description || top.appointmentType || top.name;
   }
 
-  // Backward compatibility overrides for Geniplus programs
-  if (products.includes('ABACUS_KIDS')) {
-    customerType = 'Parent';
-    painPoint = childAge ? `Abacus mental math classes for ${childAge}-year-old child` : 'Abacus classes for child';
-  } else if (products.includes('GTC')) {
-    customerType = 'Aspiring Teacher / Entrepreneur';
-    painPoint = 'Wants to learn Abacus teaching and start classes';
-  } else if (products.includes('RUBIKS_CUBE')) {
-    customerType = 'Parent / Student';
-    painPoint = 'Wants Rubik\'s Cube training';
-  } else if (products.includes('GOLD')) {
-    customerType = 'Coaching Academy Owner';
-    painPoint = 'Needs business growth, lead generation, and academy scaling';
-  } else if (products.includes('MAA')) {
-    customerType = 'Abacus Academy Owner';
-    painPoint = 'Needs software for academy student and fee management';
-  } else if (products.includes('LEAD_PILOT')) {
-    customerType = 'Coach / Trainer';
-    painPoint = 'Needs WhatsApp CRM and automated lead follow-up';
+  // Backward compatibility overrides for Geniplus programs (only when no explicit category/description was set)
+  if (matchingConfigs.length === 0 || !matchingConfigs[0].description) {
+    if (products.includes('ABACUS_KIDS')) {
+      customerType = 'Parent';
+      painPoint = childAge ? `Abacus mental math classes for ${childAge}-year-old child` : 'Abacus classes for child';
+    } else if (products.includes('GTC')) {
+      customerType = 'Aspiring Teacher / Entrepreneur';
+      painPoint = 'Wants to learn Abacus teaching and start classes';
+    } else if (products.includes('RUBIKS_CUBE')) {
+      customerType = 'Parent / Student';
+      painPoint = 'Wants Rubik\'s Cube training';
+    } else if (products.includes('GOLD')) {
+      customerType = 'Coaching Academy Owner';
+      painPoint = 'Needs business growth, lead generation, and academy scaling';
+    } else if (products.includes('MAA')) {
+      customerType = 'Abacus Academy Owner';
+      painPoint = 'Needs software for academy student and fee management';
+    } else if (products.includes('LEAD_PILOT')) {
+      customerType = 'Coach / Trainer';
+      painPoint = 'Needs WhatsApp CRM and automated lead follow-up';
+    }
   }
 
   return {

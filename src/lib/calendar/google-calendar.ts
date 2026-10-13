@@ -5,6 +5,8 @@ import type {
   OAuthCredentials,
 } from '@/types/calendar';
 
+import crypto from 'crypto';
+
 export interface CreateBookingArgs {
   title: string;
   description?: string;
@@ -13,6 +15,25 @@ export interface CreateBookingArgs {
   startTime: string; // ISO string
   endTime: string;   // ISO string
   timezone?: string;
+  idempotencyKey?: string;
+  eventId?: string;
+}
+
+/**
+ * Computes a deterministic Google Calendar event ID formatted as valid base32hex [0-9a-v].
+ * SHA256 produces hex digits [0-9a-f], which is a valid subset of base32hex.
+ */
+export function computeDeterministicCalendarEventId(
+  accountId: string,
+  contactId: string,
+  productId: string,
+  exactStartTime: string,
+): string {
+  const hash = crypto
+    .createHash('sha256')
+    .update(`${accountId}_${contactId}_${productId}_${exactStartTime}`)
+    .digest('hex');
+  return `gcal${hash.slice(0, 28)}`;
 }
 
 export interface GoogleBookingResult {
@@ -186,9 +207,17 @@ export async function createGoogleCalendarBooking(
   const targetCalendarId = config.calendar_id || 'primary';
   const tz = args.timezone || config.default_timezone || 'Asia/Kolkata';
 
-  const requestId = `leadpilot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const deterministicEventId =
+    args.eventId ||
+    (args.idempotencyKey
+      ? `gcal${crypto.createHash('sha256').update(args.idempotencyKey).digest('hex').slice(0, 28)}`
+      : undefined);
 
-  const eventPayload = {
+  const requestId =
+    args.idempotencyKey || `leadpilot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+  const eventPayload: Record<string, unknown> = {
+    ...(deterministicEventId ? { id: deterministicEventId } : {}),
     summary: args.title,
     description: args.description,
     start: {
@@ -247,6 +276,44 @@ export async function createGoogleCalendarBooking(
     const errMessage = insertErr instanceof Error ? insertErr.message : String(insertErr);
     console.warn('[google-calendar] events.insert initial attempt failed:', errMessage);
 
+    // Idempotent conflict recovery: If event with this deterministic ID already exists, fetch it
+    if (
+      deterministicEventId &&
+      (errMessage.includes('409') ||
+        errMessage.includes('duplicate') ||
+        errMessage.includes('already exists') ||
+        errMessage.includes('Entity already exists'))
+    ) {
+      try {
+        console.log('[google-calendar] deterministic event already exists, fetching canonical event:', deterministicEventId);
+        const existingRes = await calendar.events.get({
+          calendarId: targetCalendarId,
+          eventId: deterministicEventId,
+        });
+        if (existingRes?.data) {
+          if (existingRes.data.status === 'cancelled') {
+            console.log('[google-calendar] deterministic event was cancelled, reviving it with confirmed status:', deterministicEventId);
+            const patchRes = await calendar.events.patch({
+              calendarId: targetCalendarId,
+              eventId: deterministicEventId,
+              requestBody: {
+                ...eventPayload,
+                status: 'confirmed',
+              },
+              conferenceDataVersion: 1,
+              sendUpdates: 'all',
+            });
+            event = patchRes.data;
+          } else {
+            event = existingRes.data;
+          }
+        }
+      } catch (getErr) {
+        console.warn('[google-calendar] failed to fetch existing event on conflict:', getErr);
+      }
+    }
+
+    if (!event) {
     const isConferenceErr =
       errMessage.includes('conference') ||
       errMessage.includes('Invalid conference type') ||
@@ -301,6 +368,7 @@ export async function createGoogleCalendarBooking(
       });
       event = finalRes.data;
     }
+  }
   }
 
   if (!event || !event.id) {

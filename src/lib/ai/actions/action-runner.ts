@@ -28,12 +28,22 @@ import {
   getPersistedConversationState,
   deriveConversationState,
   didAssistantOfferCallOrDemo,
+  didAssistantAskForSlot,
   isAffirmativeReply,
   type PersistedConversationState,
 } from '@/lib/ai/conversation-state';
 import { logAiAction } from './action-logger';
 import { formatBookingDateTime, hasDateSpecified, hasTimeSpecified } from '@/lib/calendar/date-parser';
 import type { ChatMessage, AiConfig } from '@/lib/ai/types';
+import {
+  detectLanguage,
+  getAskTimePrompt,
+  getAskDatePrompt,
+  getAskNamePrompt,
+  getAskEmailPrompt,
+  getCalendarErrorHandoffNotice,
+  DEFAULT_NEUTRAL_HANDOFF_MESSAGE,
+} from '@/lib/ai/defaults';
 
 export interface RunAiPipelineArgs {
   db: SupabaseClient;
@@ -53,6 +63,7 @@ export interface RunAiPipelineArgs {
     lead_score?: number;
     lead_temperature?: string | null;
   };
+  referenceDate?: Date;
 }
 
 /**
@@ -153,12 +164,15 @@ export async function runAiActionPipeline(
     configOwnerUserId,
     inboundText,
     messages,
+    aiConfig,
     productConfigs,
     contactRecord,
+    referenceDate,
   } = args;
 
   const tagsAdded: string[] = [];
   const tagsRemoved: string[] = [];
+  const lang = detectLanguage(inboundText);
 
   // Resolve Tenant Product Catalogue
   let resolvedCatalogue: TenantProductConfig[] = [];
@@ -184,20 +198,6 @@ export async function runAiActionPipeline(
     catalogue: resolvedCatalogue.length > 0 ? resolvedCatalogue : undefined,
   });
 
-  // Ambiguity check: If customer's request matches multiple products equally, ask clarifying question
-  if (intents.isAmbiguousProduct && intents.clarifyingQuestion) {
-    return {
-      customerResponse: intents.clarifyingQuestion,
-      productKey: intents.products[0],
-      tagsAdded,
-      tagsRemoved,
-      leadTemperature: 'warm',
-      leadScore: 10,
-      assignedAgentId: null,
-      isHandoff: false,
-    };
-  }
-
   // Load conversation state from DB and messages
   let persistedState: PersistedConversationState | null = null;
   try {
@@ -216,7 +216,7 @@ export async function runAiActionPipeline(
   }
 
   const activeProductConfig = primaryProductKey
-    ? catalogueMap[primaryProductKey] || DEFAULT_PRODUCT_CONFIGS[primaryProductKey]
+    ? catalogueMap[primaryProductKey] || (resolvedCatalogue.length === 0 ? DEFAULT_PRODUCT_CONFIGS[primaryProductKey] : undefined)
     : undefined;
 
   // Ensure stage tags include CALL_REQUESTED when customer accepted or requested a call
@@ -238,7 +238,7 @@ export async function runAiActionPipeline(
 
   // 2. Product Tagging (scoped to tenant)
   for (const prodKey of intents.products) {
-    const pCfg = catalogueMap[prodKey] || DEFAULT_PRODUCT_CONFIGS[prodKey];
+    const pCfg = catalogueMap[prodKey] || (resolvedCatalogue.length === 0 ? DEFAULT_PRODUCT_CONFIGS[prodKey] : undefined);
     const tagName = pCfg?.tags?.interestTag || pCfg?.tagName;
     if (tagName) {
       const added = await applyContactTag({
@@ -339,7 +339,7 @@ export async function runAiActionPipeline(
 
     return {
       customerResponse:
-        "I'm connecting you with one of our team members right now. They'll assist you shortly! 😊",
+        aiConfig?.handoff_message || DEFAULT_NEUTRAL_HANDOFF_MESSAGE,
       productKey: primaryProductKey,
       tagsAdded,
       tagsRemoved,
@@ -368,7 +368,7 @@ export async function runAiActionPipeline(
   // Schedule or Timing Query (answer strictly from tenant schedule, never invent timings)
   if (detectScheduleQuery(inboundText)) {
     const profile = await getTenantBusinessProfile(db, accountId);
-    customerResponse = formatScheduleResponse(effectiveProductConfig, profile);
+    customerResponse = formatScheduleResponse(effectiveProductConfig, profile, lang);
     return {
       customerResponse: sanitizeCustomerResponse(customerResponse),
       productKey: primaryProductKey,
@@ -415,6 +415,11 @@ export async function runAiActionPipeline(
     };
   }
 
+  const assistantMessages = messages.filter((m) => m.role === 'assistant');
+  const lastAssistantMsg = assistantMessages[assistantMessages.length - 1]?.content || '';
+  const allHistory = messages.map((m) => m.content).join(' \n ');
+  const hasDemoOrCallInHistory = /demo|trial|book|call|schedule/i.test(allHistory);
+
   const isRescheduleScenario =
     Boolean(activeBooking) &&
     Boolean(intents.isSlotCheckOrReschedule || intents.hasOnlyTime || (intents.hasBothDateAndTime && activeBooking));
@@ -423,7 +428,15 @@ export async function runAiActionPipeline(
     !isRescheduleScenario &&
     (intents.isReadyToBook ||
       intents.hasBothDateAndTime ||
-      (intents.hasOnlyDate && intents.hasOnlyTime));
+      (intents.hasOnlyDate && intents.hasOnlyTime) ||
+      ((intents.hasOnlyTime || intents.hasOnlyDate) &&
+        (persistedState?.state === 'AWAITING_PREFERRED_SLOT' ||
+         persistedState?.state === 'OFFERED_CALL_OR_DEMO' ||
+         Boolean(persistedState?.offeredSlots?.length) ||
+         Boolean(persistedState?.preferredDateText) ||
+         hasDemoOrCallInHistory ||
+         didAssistantOfferCallOrDemo(lastAssistantMsg) ||
+         didAssistantAskForSlot(lastAssistantMsg))));
 
   if (isRescheduleScenario && activeBooking && effectiveProductConfig) {
     // A. RESCHEDULING SCENARIO: Customer requested an alternative slot or reschedule
@@ -523,12 +536,20 @@ export async function runAiActionPipeline(
         slots: alternatives,
       };
 
+      await persistConversationState(db, accountId, contactId, conversationId, {
+        state: 'AWAITING_PREFERRED_SLOT',
+        productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
+        appointmentType: effectiveProductConfig.appointmentType,
+        offeredSlots: alternatives,
+      });
+
       if (alternatives.length > 0) {
+        const bookedSlotFormatted = formatBookingDateTime(check.startTime, bookingTz);
         const slotsList = alternatives.map((s) => `• ${s.humanText}`).join('\n');
         customerResponse =
-          `That specific time is unfortunately booked, but I found these open slots on our calendar:\n\n` +
+          `${bookedSlotFormatted} is unfortunately booked, but I found these alternative open slots on our calendar:\n\n` +
           `${slotsList}\n\n` +
-          `Would any of these work for you?`;
+          `Which one works best for you?`;
       } else {
         customerResponse =
           `That slot is currently unavailable. Could you let me know another day or time that works for you?`;
@@ -537,12 +558,49 @@ export async function runAiActionPipeline(
   } else if (isBookingScenario && effectiveProductConfig) {
     // B. NEW BOOKING SCENARIO
     let preferredTimeText = inboundText;
-    if (!(hasDateSpecified(inboundText) && hasTimeSpecified(inboundText))) {
-      const slotMsg = [...messages]
-        .reverse()
-        .find((m) => m.role === 'user' && (hasDateSpecified(m.content) || hasTimeSpecified(m.content)));
-      if (slotMsg) {
-        preferredTimeText = slotMsg.content;
+
+    // Check if user is picking one of the offered slots
+    if (persistedState?.offeredSlots && persistedState.offeredSlots.length > 0) {
+      const matchSlot = persistedState.offeredSlots.find((s) => {
+        const textMatch = inboundText.toLowerCase();
+        const slotText = s.humanText.toLowerCase();
+        return textMatch.includes(slotText) || slotText.includes(textMatch) ||
+               (hasTimeSpecified(inboundText) && s.startTime.includes(inboundText)) ||
+               (hasTimeSpecified(inboundText) && s.humanText.toLowerCase().includes(textMatch));
+      });
+      if (matchSlot) {
+        // Use exact ISO timestamp to lock the date and timezone across turns
+        preferredTimeText = matchSlot.startTime || matchSlot.humanText;
+      }
+    }
+
+    if (!(hasDateSpecified(preferredTimeText) && hasTimeSpecified(preferredTimeText))) {
+      // If current input has neither date nor time, look back at the most recent user message that provided slot info
+      if (!hasDateSpecified(preferredTimeText) && !hasTimeSpecified(preferredTimeText)) {
+        const slotMsg = [...messages].reverse().find(
+          (m) => m.role === 'user' && (hasDateSpecified(m.content) || hasTimeSpecified(m.content))
+        );
+        if (slotMsg) {
+          preferredTimeText = slotMsg.content;
+        }
+      }
+
+      // If current input has time but no date, combine with previous date
+      if (hasTimeSpecified(preferredTimeText) && !hasDateSpecified(preferredTimeText)) {
+        if (persistedState?.preferredDateText && hasDateSpecified(persistedState.preferredDateText)) {
+          preferredTimeText = `${persistedState.preferredDateText} at ${preferredTimeText}`;
+        } else {
+          const prevDateMsg = [...messages].reverse().find((m) => hasDateSpecified(m.content));
+          if (prevDateMsg) {
+            preferredTimeText = `${prevDateMsg.content} at ${preferredTimeText}`;
+          }
+        }
+      } else if (hasDateSpecified(preferredTimeText) && !hasTimeSpecified(preferredTimeText)) {
+        // If current input has date but no time, combine with previous time
+        const prevTimeMsg = [...messages].reverse().find((m) => hasTimeSpecified(m.content));
+        if (prevTimeMsg) {
+          preferredTimeText = `${preferredTimeText} at ${prevTimeMsg.content}`;
+        }
       }
     }
 
@@ -614,9 +672,16 @@ export async function runAiActionPipeline(
         effectiveProductConfig.productKey === 'ABACUS_KIDS'
           ? 'demo session'
           : effectiveProductConfig.appointmentType || 'session';
-      customerResponse = `Got it! Which day would work best for the ${apptLabel}?`;
+      customerResponse = getAskDatePrompt(
+        effectiveProductConfig.customPrompts?.askDate,
+        lang,
+        apptLabel,
+      );
     } else if (!hasTime) {
-      customerResponse = `Got it! What time would work best for you?`;
+      customerResponse = getAskTimePrompt(
+        effectiveProductConfig.customPrompts?.askTime,
+        lang,
+      );
     } else if (!hasKnownName) {
       if (isChildCourse && !effectiveEmail) {
         customerResponse =
@@ -625,11 +690,16 @@ export async function runAiActionPipeline(
           `2. Child's name\n` +
           `3. Email address (for the Google Calendar invite, or let us know if you'd like to book without email 😊)`;
       } else {
-        customerResponse = `What name should I use for the booking?`;
+        customerResponse = getAskNamePrompt(
+          effectiveProductConfig.customPrompts?.askName,
+          lang,
+        );
       }
     } else if (effectiveProductConfig.requiredFields?.includes('email') && !effectiveEmail && !emailExplicitlyDeclined && !emailAlreadyAsked) {
-      customerResponse =
-        `Great! What is your email address so we can send the Google Calendar invite? (If you don't have an email, just reply "no email" and we will add the session to our calendar with your WhatsApp number!)`;
+      customerResponse = getAskEmailPrompt(
+        effectiveProductConfig.customPrompts?.askEmail,
+        lang,
+      );
     } else {
       // ALL REQUIRED FIELDS PRESENT: Construct validated booking object & execute
       const effectiveAttendeeName =
@@ -654,6 +724,7 @@ export async function runAiActionPipeline(
         productConfig: effectiveProductConfig,
         preferredTimeText,
         timezone,
+        referenceDate,
       });
 
       if (check.available) {
@@ -708,6 +779,7 @@ export async function runAiActionPipeline(
               preferredTimeText,
               customerName: effectiveAttendeeName,
               timezone,
+              referenceDate,
             });
 
             calendarResult = reschedRes;
@@ -751,6 +823,7 @@ export async function runAiActionPipeline(
             parentName: parentName || effectiveAttendeeName,
             childName: childName || undefined,
             timezone,
+            referenceDate,
           });
 
           calendarResult = bookRes;
@@ -840,13 +913,12 @@ export async function runAiActionPipeline(
             });
 
             const handoffSucceeded = Boolean(noteId || assignedAgent);
-            if (handoffSucceeded) {
-              customerResponse =
-                `I'm having trouble reserving that exact slot on Google Calendar right now. Our team has been notified and will reach out directly to confirm your ${apptName}. In the meantime, please let me know another time that works for you!`;
-            } else {
-              customerResponse =
-                `I'm having trouble reserving that exact slot on Google Calendar right now. Could you please let me know another time that works for you?`;
-            }
+            customerResponse = getCalendarErrorHandoffNotice(
+              null,
+              apptName,
+              preferredTimeText,
+              lang,
+            );
           }
         }
       } else if (
@@ -934,13 +1006,12 @@ export async function runAiActionPipeline(
         });
 
         const handoffSucceeded = Boolean(noteId || assignedAgent);
-        if (handoffSucceeded) {
-          customerResponse =
-            `I'm having trouble checking our calendar right now. Our team has been notified and will reach out directly to confirm your ${apptName} for ${check.humanText}.`;
-        } else {
-          customerResponse =
-            `I'm having trouble checking our calendar right now. Please try again shortly or let me know another time that works.`;
-        }
+        customerResponse = getCalendarErrorHandoffNotice(
+          null,
+          apptName,
+          check.humanText,
+          lang,
+        );
       } else {
         const alternatives = await executeGetAvailableSlots(
           {
@@ -952,6 +1023,7 @@ export async function runAiActionPipeline(
             productConfig: effectiveProductConfig,
             preferredTimeText,
             timezone,
+            referenceDate,
           },
           check.startTime,
           3,
@@ -964,12 +1036,21 @@ export async function runAiActionPipeline(
           slots: alternatives,
         };
 
+        await persistConversationState(db, accountId, contactId, conversationId, {
+          state: 'AWAITING_PREFERRED_SLOT',
+          productKey: effectiveProductConfig.productKey || effectiveProductConfig.productServiceId,
+          appointmentType: effectiveProductConfig.appointmentType,
+          offeredSlots: alternatives,
+          preferredDateText: hasDate ? preferredTimeText : undefined,
+        });
+
         if (alternatives.length > 0) {
+          const bookedSlotFormatted = formatBookingDateTime(check.startTime, timezone);
           const slotsList = alternatives.map((s) => `• ${s.humanText}`).join('\n');
           customerResponse =
-            `That specific time is unfortunately booked, but I found these open slots on our calendar:\n\n` +
+            `${bookedSlotFormatted} is unfortunately booked, but I found these alternative open slots on our calendar:\n\n` +
             `${slotsList}\n\n` +
-            `Would any of these work for you?`;
+            `Which one works best for you?`;
         } else {
           customerResponse =
             `That slot is currently unavailable. Could you let me know another day or time that works for you?`;
@@ -977,9 +1058,16 @@ export async function runAiActionPipeline(
       }
     }
   } else if (intents.hasOnlyDate && !intents.hasOnlyTime) {
-    customerResponse = `Got it! What time would work best for you?`;
+    customerResponse = getAskTimePrompt(
+      activeProductConfig?.customPrompts?.askTime,
+      lang,
+    );
   } else if (intents.hasOnlyTime && !intents.hasOnlyDate) {
-    customerResponse = `Got it! Which day would you prefer for this?`;
+    customerResponse = getAskDatePrompt(
+      activeProductConfig?.customPrompts?.askDate,
+      lang,
+      activeProductConfig?.name,
+    );
   } else if (intents.signals.includes('asks_payment') || intents.signals.includes('ready_to_join')) {
     // Ready to join / payment intent
     crmNoteCreated = await createInternalCrmNote({
@@ -1078,31 +1166,8 @@ export async function runAiActionPipeline(
         nextAction: 'Offer free demo / introductory call',
       });
 
-      if (primaryProductKey === 'ABACUS_KIDS') {
-        const ageNote = intents.childAge
-          ? `Our Abacus Mental Math program is wonderful for ${intents.childAge}-year-olds!`
-          : `Our Abacus program is designed for children aged 5–14.`;
-        customerResponse =
-          `Absolutely 😊 ${ageNote} Would you like to book a free 45-minute live demo?`;
-      } else if (primaryProductKey === 'MAA') {
-        customerResponse =
-          `Absolutely 😊 MAA helps Abacus academy owners manage students, teachers, fees, leads, and daily operations. Would you like to see a quick demo?`;
-      } else if (primaryProductKey === 'LEAD_PILOT') {
-        customerResponse =
-          `Great! Lead Pilot automates lead capture, WhatsApp follow-ups, and calendar bookings for coaches. Would you like to book a quick demo call?`;
-      } else if (primaryProductKey === 'GTC') {
-        customerResponse =
-          `That's great! Our Teacher Training Course (GTC) equips you with complete training and certification to start your own Abacus classes. Would you like to schedule a quick call with our training advisor?`;
-      } else if (primaryProductKey === 'GOLD') {
-        customerResponse =
-          `Scaling a coaching academy requires predictable lead generation and sales systems. Would you like to schedule a Business Growth Call to review your academy's expansion roadmap?`;
-      } else if (primaryProductKey === 'RUBIKS_CUBE') {
-        customerResponse =
-          `Awesome! Our Rubik's Cube program teaches children how to solve the 3x3 cube step-by-step with speedcubing algorithms. Would you like to book a free demo session?`;
-      } else {
-        customerResponse =
-          `Great! Our ${activeProductConfig.name} is designed to ${activeProductConfig.description || 'help you achieve your goals'}. Would you like to schedule a ${activeProductConfig.durationMinutes}-minute ${activeProductConfig.appointmentType}?`;
-      }
+      customerResponse =
+        `Great! Our ${activeProductConfig.name} is designed to ${activeProductConfig.description || 'help you achieve your goals'}. Would you like to schedule a ${activeProductConfig.durationMinutes}-minute ${activeProductConfig.appointmentType}?`;
     }
   }
 

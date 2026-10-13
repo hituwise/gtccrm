@@ -21,7 +21,10 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./config', () => ({ loadAiConfig: h.loadAiConfig }))
 vi.mock('./context', () => ({ buildConversationContext: h.buildConversationContext }))
-vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
+vi.mock('./knowledge', () => ({
+  retrieveKnowledge: h.retrieveKnowledge,
+  buildContextualRetrievalQuery: (query: string) => query,
+}))
 vi.mock('./generate', () => ({ generateReply: h.generateReply }))
 vi.mock('@/lib/flows/meta-send', () => ({
   engineSendText: h.engineSendText,
@@ -33,30 +36,35 @@ vi.mock('@/lib/whatsapp/meta-api', () => ({
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
-      if (table === 'automations') {
-        // .select().eq().eq().in().limit() → active auto-responders
-        const chain = {
-          select: () => chain,
-          eq: () => chain,
-          in: () => chain,
-          limit: () =>
-            Promise.resolve({ data: h.state.autoResponders, error: null }),
-        }
-        return chain
-      }
-      // conversations
-      return {
-        select: () => ({
-          eq: () => ({
-            maybeSingle: () =>
-              Promise.resolve({ data: h.state.conv, error: null }),
+      const chain: any = {
+        select: () => chain,
+        eq: () => chain,
+        in: () => chain,
+        order: () => chain,
+        limit: () =>
+          table === 'automations'
+            ? Promise.resolve({ data: h.state.autoResponders, error: null })
+            : chain,
+        single: () => Promise.resolve({ data: null, error: null }),
+        maybeSingle: () =>
+          Promise.resolve({
+            data: table === 'conversations' ? h.state.conv : null,
+            error: null,
           }),
-        }),
         update: (payload: Record<string, unknown>) => {
-          h.state.updatePayload = payload
-          return { eq: () => Promise.resolve({ error: null }) }
+          if (table === 'conversations') {
+            h.state.updatePayload = payload
+          }
+          return chain
         },
+        insert: () => Promise.resolve({ error: null }),
+        then: (resolve: any) =>
+          resolve({
+            data: table === 'conversations' ? h.state.conv : [],
+            error: null,
+          }),
       }
+      return chain
     },
     rpc: (name: string, args: unknown) => {
       h.state.rpcCalls.push({ name, args })

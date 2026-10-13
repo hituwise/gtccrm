@@ -94,4 +94,59 @@ describe('booking-coordinator', () => {
       expect(formatted).toContain('(UTC)');
     });
   });
+
+  describe('Cancel-then-rebook idempotency and resurrection avoidance', () => {
+    it('does not return a cancelled booking as confirmed and allows rebooking the slot', async () => {
+      const { findExactBookingForContactAndProduct } = await import('./booking-coordinator');
+      const accountId = 'acc-cancel-rebook';
+      const contactId = 'con-cancel-rebook';
+      const slotIso = '2026-10-20T10:00:00.000Z';
+      const prodKey = 'LEAD_PILOT';
+
+      // Mock database has an old booking with status 'cancelled'
+      const mockRows: any[] = [
+        {
+          id: 'booking-old-1',
+          account_id: accountId,
+          contact_id: contactId,
+          start_time: slotIso,
+          product_service_id: prodKey,
+          status: 'cancelled',
+          google_event_id: 'gcal-deterministic-123',
+        },
+      ];
+
+      const mockDb: any = {
+        from: () => {
+          let statusFilter: string | null = null;
+          const chain: any = {
+            select: () => chain,
+            eq: (_col: string, val: string) => {
+              if (_col === 'status') statusFilter = val;
+              return chain;
+            },
+            order: () => chain,
+            then: (resolve: any) => {
+              const matched = mockRows.filter(
+                (r) => !statusFilter || r.status === statusFilter,
+              );
+              return Promise.resolve({ data: matched, error: null }).then(resolve);
+            },
+          };
+          return chain;
+        },
+      };
+
+      // Exact-slot lookup MUST ignore the cancelled booking
+      const found = await findExactBookingForContactAndProduct(
+        mockDb,
+        accountId,
+        contactId,
+        prodKey,
+        slotIso,
+      );
+      expect(found).toBeNull();
+    });
+  });
 });
+

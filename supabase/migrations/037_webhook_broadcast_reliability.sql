@@ -41,11 +41,29 @@
 -- index, so they never collide with each other.
 -- ============================================================
 
+-- Safely repoint any reply_to_message_id references from duplicates to the surviving row (rn = 1)
+WITH duplicates AS (
+  SELECT id,
+         first_value(id) OVER (
+           PARTITION BY conversation_id, message_id
+           ORDER BY created_at ASC, id ASC
+         ) AS keeper_id,
+         row_number() OVER (
+           PARTITION BY conversation_id, message_id
+           ORDER BY created_at ASC, id ASC
+         ) AS rn
+  FROM messages
+  WHERE message_id IS NOT NULL
+)
+UPDATE messages m
+SET reply_to_message_id = d.keeper_id
+FROM duplicates d
+WHERE m.reply_to_message_id = d.id
+  AND d.rn > 1;
+
 -- Collapse pre-existing duplicates (keep the earliest row per key —
 -- it's the one whose downstream side effects already ran) so the
--- unique index can be created. Only rows with a non-NULL message_id
--- can collide. reply_to_message_id is ON DELETE SET NULL (migration
--- 009) and reactions cascade, so removing a strict duplicate is safe.
+-- unique index can be created safely without orphaned references.
 WITH ranked AS (
   SELECT id,
          row_number() OVER (

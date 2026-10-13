@@ -184,7 +184,8 @@ describe('AI Agent Action System', () => {
     expect(res.productKey).toBe('ABACUS_KIDS');
     expect(res.tagsAdded).toContain('ABACUS_KIDS_INTEREST');
     expect(res.tagsAdded).toContain('INTERESTED');
-    expect(res.customerResponse).toContain('free 45-minute live demo');
+    expect(res.customerResponse).toContain('Abacus Mental Math Program');
+    expect(res.customerResponse).toContain('Free Abacus Demo');
     expect(res.customerResponse).not.toContain('ADD_TAG');
     expect(res.customerResponse).not.toContain('LEAD_SCORE');
   });
@@ -307,7 +308,7 @@ describe('AI Agent Action System', () => {
     });
 
     expect(res.tagsAdded).not.toContain('DEMO_BOOKED');
-    expect(res.customerResponse).toContain('That specific time is unfortunately booked');
+    expect(res.customerResponse).toContain('is unfortunately booked');
     expect(res.customerResponse).toContain('Sat, Oct 10 at 2:00 PM');
     expect(res.customerResponse).toContain('Sat, Oct 10 at 3:30 PM');
   });
@@ -333,7 +334,8 @@ describe('AI Agent Action System', () => {
     expect(res.tagsAdded).toContain('MAA_INTEREST');
     expect(res.tagsAdded).toContain('INTERESTED');
     expect(res.crmNoteCreated).toContain('MAA');
-    expect(res.customerResponse).toContain('manage students, teachers, fees');
+    expect(res.customerResponse).toContain('MAA — My Abacus Academy');
+    expect(res.customerResponse).toContain('MAA Product Demo');
   });
 
   // ============================================================
@@ -380,7 +382,8 @@ describe('AI Agent Action System', () => {
     expect(res.productKey).toBe('GTC');
     expect(res.tagsAdded).toContain('GTC_INTEREST');
     expect(res.tagsAdded).toContain('INTERESTED');
-    expect(res.customerResponse).toContain('Teacher Training Course (GTC)');
+    expect(res.customerResponse).toContain('Abacus Teacher Training');
+    expect(res.customerResponse).toContain('GTC Training / Business Call');
   });
 
   // ============================================================

@@ -12,7 +12,16 @@ import { embedTexts, toVectorLiteral } from './embeddings'
 interface MatchRow {
   id: string
   content: string
+  distance?: number
 }
+
+/**
+ * Maximum cosine distance threshold for semantic relevance.
+ * In pgvector cosine distance (<=>): 0 is identical, 1 is orthogonal.
+ * Distance <= 0.38 represents high semantic similarity (>= 0.62).
+ * Unrelated queries yield distance > 0.40 and are discarded.
+ */
+export const SEMANTIC_SIMILARITY_MAX_DISTANCE = 0.38;
 
 /**
  * (Re)build the chunks for one document. Deletes the document's
@@ -118,7 +127,16 @@ export async function retrieveKnowledge(
           p_match_count: k,
         })
         if (!error && Array.isArray(data)) {
-          for (const row of data as MatchRow[]) picked.set(row.id, row.content)
+          for (const row of data as MatchRow[]) {
+            if (
+              row.distance !== undefined &&
+              row.distance !== null &&
+              row.distance > SEMANTIC_SIMILARITY_MAX_DISTANCE
+            ) {
+              continue
+            }
+            picked.set(row.id, row.content)
+          }
         }
       }
     } catch (err) {
@@ -126,7 +144,7 @@ export async function retrieveKnowledge(
     }
   }
 
-  // Lexical top-up (also the sole path when there's no embeddings key).
+  // Lexical path — used when there's no embeddings key, or to top up when semantic returned fewer than k
   if (picked.size < k) {
     try {
       const { data, error } = await db.rpc('match_ai_knowledge_fts', {
@@ -183,4 +201,46 @@ export async function retrieveKnowledge(
   }
 
   return Array.from(picked.values()).slice(0, k)
+}
+
+export interface ContextualQueryArgs {
+  latestUserText: string;
+  messages: Array<{ role: string; content: string }>;
+  currentTopic?: string | null;
+  selectedProducts?: string[];
+}
+
+/**
+ * Builds a search query for semantic KB retrieval that incorporates recent conversation
+ * context when the user's latest input is short or affirmative ("yes", "both", "10 am", "sure").
+ * Prevents triggering no-knowledge fallback / handoff on short conversational answers.
+ */
+export function buildContextualRetrievalQuery(args: ContextualQueryArgs): string {
+  const { latestUserText, messages, currentTopic, selectedProducts } = args;
+  const trimmed = latestUserText.trim();
+
+  // If the query is already substantive and detailed (>= 35 chars and not a short reply),
+  // use it directly so retrieval remains sharply focused.
+  const isShortReply =
+    trimmed.length < 35 ||
+    /^(?:yes|no|both|both of them|all|sure|ok|okay|yep|yeah|tell me|interested|details|price|cost|timing|schedule|when|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)$/i.test(trimmed);
+
+  if (!isShortReply && messages.length <= 1) {
+    return latestUserText;
+  }
+
+  const parts: string[] = [];
+  if (currentTopic) parts.push(currentTopic);
+  if (selectedProducts && selectedProducts.length > 0) parts.push(selectedProducts.join(' '));
+
+  // Collect previous messages (most recent assistant prompt and user text)
+  const recentHistory = messages.slice(-4);
+  for (const m of recentHistory) {
+    if (m.content && m.content.trim()) {
+      parts.push(m.content.trim());
+    }
+  }
+
+  const combined = parts.join(' ').replace(/\s+/g, ' ').trim();
+  return combined.slice(0, 350) || latestUserText;
 }

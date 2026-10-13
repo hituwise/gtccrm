@@ -8,6 +8,7 @@ import type {
 import {
   createGoogleCalendarBooking,
   updateGoogleCalendarBooking,
+  computeDeterministicCalendarEventId,
   type GoogleBookingResult,
 } from './google-calendar';
 import { parseBookingSlot, formatBookingDateTime } from './date-parser';
@@ -200,9 +201,11 @@ export interface ExecuteBookingArgs {
   sendWhatsAppConfirmation?: boolean;
   productConfig?: TenantProductConfig;
   productServiceId?: string;
+  productKey?: string;
   meetingMode?: MeetingLinkMode;
   staticMeetingLink?: string | null;
   timezone?: string;
+  referenceDate?: Date;
 }
 
 /**
@@ -250,6 +253,47 @@ export async function findActiveBookingForContact(
     return null;
   } catch (err) {
     console.warn('[booking-coordinator] findActiveBookingForContact exception:', err);
+    return null;
+  }
+}
+
+/**
+ * Exact-slot idempotency lookup: matches contact + product + exact start_time (ISO).
+ */
+export async function findExactBookingForContactAndProduct(
+  db: SupabaseClient,
+  accountId: string,
+  contactId: string,
+  productKey: string,
+  exactStartTime: string,
+): Promise<CalendarBooking | null> {
+  try {
+    let query: any = db.from('calendar_bookings').select('*');
+    if (typeof query?.eq === 'function') {
+      query = query
+        .eq('account_id', accountId)
+        .eq('contact_id', contactId)
+        .eq('status', 'confirmed');
+    }
+    if (typeof query?.order === 'function') {
+      query = query.order('created_at', { ascending: false });
+    }
+    const { data, error } = await query;
+    if (error || !Array.isArray(data)) return null;
+
+    const exactTarget = new Date(exactStartTime).getTime();
+    const match = data.find((b: any) => {
+      const isSameTime = b.start_time && new Date(b.start_time).getTime() === exactTarget;
+      const isSameProd =
+        !productKey ||
+        b.product_service_id === productKey ||
+        b.product_key === productKey;
+      return isSameTime && isSameProd;
+    });
+
+    return (match as CalendarBooking) || null;
+  } catch (err) {
+    console.warn('[booking-coordinator] findExactBookingForContactAndProduct exception:', err);
     return null;
   }
 }
@@ -358,9 +402,11 @@ export async function executeDemoBooking(
     sendWhatsAppConfirmation = true,
     productConfig,
     productServiceId,
+    productKey,
     meetingMode: explicitMeetingMode,
     staticMeetingLink: explicitStaticLink,
     timezone: explicitTimezone,
+    referenceDate: explicitReferenceDate,
   } = args;
 
   // 1. Fetch contact info
@@ -379,8 +425,8 @@ export async function executeDemoBooking(
   const effectiveEmail = email || contact?.email || null;
 
   const descDetails = [
-    `Demo Call booked via LeadPilot WhatsApp CRM.`,
-    `Parent / Contact: ${parentName}`,
+    `Appointment booked via WhatsApp Assistant.`,
+    `Contact Name: ${parentName}`,
     childName ? `Child: ${childName}${args.childAge ? ` (Age: ${args.childAge})` : ''}` : null,
     `Phone: ${contactPhone}`,
     effectiveEmail ? `Email: ${effectiveEmail}` : `Email: None provided (added to calendar)`,
@@ -436,23 +482,29 @@ export async function executeDemoBooking(
   const slot = parseBookingSlot(
     preferredTimeText || 'tomorrow 11am',
     durationMinutes,
-    new Date(),
+    explicitReferenceDate || new Date(),
     timezone,
+    Boolean(explicitReferenceDate),
   );
 
-  // Check if contact already has an active confirmed booking for this slot (reconcile retry without creating duplicate)
-  const existingSlotBooking = await findActiveBookingForContact(db, accountId, contactId);
-  if (
-    existingSlotBooking &&
-    existingSlotBooking.start_time &&
-    Math.abs(new Date(existingSlotBooking.start_time).getTime() - new Date(slot.startTime).getTime()) < 5 * 60 * 1000
-  ) {
+  // Exact-slot idempotency: key on contact + product + exact slot (not a fuzzy 5-minute window)
+  const targetProdKey =
+    productKey || (productConfig?.productKey || productConfig?.productServiceId) || 'default';
+
+  const exactExistingBooking = await findExactBookingForContactAndProduct(
+    db,
+    accountId,
+    contactId,
+    targetProdKey,
+    slot.startTime,
+  );
+  if (exactExistingBooking) {
     return {
       success: true,
-      booking: existingSlotBooking,
-      meetLink: existingSlotBooking.meet_link,
-      htmlLink: existingSlotBooking.html_link,
-      readableDateTime: formatBookingDateTime(existingSlotBooking.start_time, timezone),
+      booking: exactExistingBooking,
+      meetLink: exactExistingBooking.meet_link,
+      htmlLink: exactExistingBooking.html_link,
+      readableDateTime: formatBookingDateTime(exactExistingBooking.start_time, timezone),
     };
   }
 
@@ -465,6 +517,13 @@ export async function executeDemoBooking(
   const hasCalendarCredentials = Boolean(
     calConfig?.is_active &&
     (calConfig.service_account_key || calConfig.oauth_credentials)
+  );
+
+  const deterministicEventId = computeDeterministicCalendarEventId(
+    accountId,
+    contactId,
+    targetProdKey,
+    slot.startTime,
   );
 
   if (meetingMode === 'GOOGLE_MEET') {
@@ -486,6 +545,8 @@ export async function executeDemoBooking(
         startTime: slot.startTime,
         endTime: slot.endTime,
         timezone,
+        idempotencyKey: deterministicEventId,
+        eventId: deterministicEventId,
       });
 
       googleEventId = googleResult.eventId;
@@ -524,6 +585,8 @@ export async function executeDemoBooking(
           startTime: slot.startTime,
           endTime: slot.endTime,
           timezone,
+          idempotencyKey: deterministicEventId,
+          eventId: deterministicEventId,
         });
         googleEventId = googleResult.eventId;
         htmlLink = googleResult.htmlLink;
@@ -543,6 +606,8 @@ export async function executeDemoBooking(
           startTime: slot.startTime,
           endTime: slot.endTime,
           timezone,
+          idempotencyKey: deterministicEventId,
+          eventId: deterministicEventId,
         });
         googleEventId = googleResult.eventId;
         htmlLink = googleResult.htmlLink;
@@ -563,6 +628,8 @@ export async function executeDemoBooking(
           startTime: slot.startTime,
           endTime: slot.endTime,
           timezone,
+          idempotencyKey: deterministicEventId,
+          eventId: deterministicEventId,
         });
         googleEventId = googleResult.eventId;
         htmlLink = googleResult.htmlLink;
@@ -651,6 +718,32 @@ export async function executeDemoBooking(
 
   if (bookingErr) {
     console.error('[booking-coordinator] failed to insert booking:', bookingErr);
+
+    // Concurrency idempotency: if unique constraint triggered, recover the winning concurrent row
+    if (
+      bookingErr.code === '23505' ||
+      bookingErr.message?.includes('duplicate key') ||
+      bookingErr.message?.includes('unique constraint') ||
+      bookingErr.message?.includes('uq_calendar_bookings')
+    ) {
+      const existing = await findExactBookingForContactAndProduct(
+        db,
+        accountId,
+        contactId,
+        targetProdKey,
+        slot.startTime,
+      );
+      if (existing) {
+        return {
+          success: true,
+          booking: existing,
+          meetLink: existing.meet_link,
+          htmlLink: existing.html_link,
+          readableDateTime: formatBookingDateTime(existing.start_time, timezone),
+        };
+      }
+    }
+
     // If table schema cache does not yet have meeting_mode or product_service_id (pre-migration 048)
     if (
       bookingErr.code === 'PGRST204' ||
@@ -668,6 +761,28 @@ export async function executeDemoBooking(
         .single();
       if (!fallbackErr && fallbackInserted) {
         insertedBooking = fallbackInserted as CalendarBooking;
+      } else if (
+        fallbackErr &&
+        (fallbackErr.code === '23505' ||
+          fallbackErr.message?.includes('duplicate key') ||
+          fallbackErr.message?.includes('unique constraint'))
+      ) {
+        const existing = await findExactBookingForContactAndProduct(
+          db,
+          accountId,
+          contactId,
+          targetProdKey,
+          slot.startTime,
+        );
+        if (existing) {
+          return {
+            success: true,
+            booking: existing,
+            meetLink: existing.meet_link,
+            htmlLink: existing.html_link,
+            readableDateTime: formatBookingDateTime(existing.start_time, timezone),
+          };
+        }
       }
     }
   } else if (inserted) {

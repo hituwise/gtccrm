@@ -229,6 +229,13 @@ vi.mock('@supabase/supabase-js', () => ({
       }
     },
     rpc: (name: string, args: Record<string, unknown>) => {
+      if (
+        name === 'acquire_contact_lock' ||
+        name === 'renew_contact_lock' ||
+        name === 'release_contact_lock'
+      ) {
+        return Promise.resolve({ data: true, error: null })
+      }
       h.state.rpcCalls.push({ name, args })
       return Promise.resolve({ data: null, error: null })
     },

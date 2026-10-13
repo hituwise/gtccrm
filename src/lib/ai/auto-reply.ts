@@ -1,9 +1,13 @@
 import { supabaseAdmin } from './admin-client'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
-import { retrieveKnowledge } from './knowledge'
+import { retrieveKnowledge, buildContextualRetrievalQuery } from './knowledge'
 import { generateReply } from './generate'
-import { buildSystemPrompt } from './defaults'
+import {
+  buildSystemPrompt,
+  DEFAULT_NEUTRAL_FALLBACK_MESSAGE,
+  DEFAULT_NEUTRAL_HANDOFF_MESSAGE,
+} from './defaults'
 import { buildHandoffSummary } from './handoff'
 import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
@@ -22,6 +26,8 @@ import { analyzeCustomerIntent } from '@/lib/ai/actions/intent-detector'
 import type { ProductActionConfig, ProductKey } from '@/lib/ai/actions/types'
 import { getTenantProducts } from '@/lib/products/tenant-products'
 import { buildTenantAiSystemPrompt } from '@/lib/ai/tenant-prompt-builder'
+import { validateReplyOutput } from '@/lib/ai/validate'
+import { persistConversationState, getPersistedConversationState } from '@/lib/ai/conversation-state'
 
 import { logDecision } from './decision-logger'
 
@@ -146,10 +152,13 @@ export async function dispatchInboundToAiReply(
     // Check for Google Calendar Demo / Call booking intent with email
     const userMsg = latestUserMessage(messages)
 
+    // Load active tenant products/services for action routing and AI context
+    const tenantCatalogue = await getTenantProducts(db, accountId, { fallbackToSeedIfGeniplus: true });
+    let actionPipelineResult: Awaited<ReturnType<typeof runAiActionPipeline>> | undefined = undefined;
+
     // Execute the Action System (CRM tagging, scoring, lead routing, milestone notes, calendar availability & booking)
     if (config.actionSystemEnabled !== false && userMsg) {
       try {
-        const tenantCatalogue = await getTenantProducts(db, accountId, { fallbackToSeedIfGeniplus: true });
         const intents = analyzeCustomerIntent({
           currentText: userMsg,
           messages,
@@ -167,22 +176,22 @@ export async function dispatchInboundToAiReply(
           Boolean(intents.isSlotCheckOrReschedule) ||
           intents.isHumanHandoffRequested ||
           intents.stageTagsToAdd.length > 0 ||
-          intents.signals.length > 0
+          intents.signals.length > 0;
 
         if (hasActionIntent) {
-          let contact: { id: string; name?: string | null; phone?: string | null; email?: string | null; lead_score?: number; lead_temperature?: string | null } | null = null
+          let contact: { id: string; name?: string | null; phone?: string | null; email?: string | null; lead_score?: number; lead_temperature?: string | null } | null = null;
           try {
             const { data: cData } = await db
               .from('contacts')
               .select('id, name, phone, email, lead_score, lead_temperature')
               .eq('id', contactId)
-              .maybeSingle()
-            contact = cData
+              .maybeSingle();
+            contact = cData;
           } catch {
             // Continue if contact lookup fails
           }
 
-          const pipelineResult = await runAiActionPipeline({
+          actionPipelineResult = await runAiActionPipeline({
             db,
             accountId,
             conversationId,
@@ -193,85 +202,105 @@ export async function dispatchInboundToAiReply(
             aiConfig: config,
             productConfigs: tenantCatalogue,
             contactRecord: contact || undefined,
-          })
+          });
 
-          if (pipelineResult.isHandoff) {
+          if (actionPipelineResult.isHandoff) {
             logDecision('AI_NO_RESPONSE', {
               conversationId,
               accountId,
               reason: 'action_pipeline_handoff',
-            })
+            });
             const update: Record<string, unknown> = {
               ai_autoreply_disabled: true,
-              ai_handoff_summary: pipelineResult.crmNoteCreated || 'Human handoff requested by customer.',
-            }
-            if (pipelineResult.assignedAgentId) {
-              update.assigned_agent_id = pipelineResult.assignedAgentId
+              ai_handoff_summary: actionPipelineResult.crmNoteCreated || 'Human handoff requested by customer.',
+            };
+            if (actionPipelineResult.assignedAgentId) {
+              update.assigned_agent_id = actionPipelineResult.assignedAgentId;
             } else if (config.handoffAgentId && !conv.assigned_agent_id) {
-              update.assigned_agent_id = config.handoffAgentId
+              update.assigned_agent_id = config.handoffAgentId;
             }
-            await db.from('conversations').update(update).eq('id', conversationId)
+            await db.from('conversations').update(update).eq('id', conversationId);
 
             const { data: claimed } = await db.rpc('claim_ai_reply_slot', {
               conversation_id: conversationId,
               max_replies: config.autoReplyMaxPerConversation,
-            })
-            if (claimed === true && pipelineResult.customerResponse) {
+            });
+            if (claimed === true && actionPipelineResult.customerResponse) {
               await engineSendText({
                 accountId,
                 userId: configOwnerUserId,
                 conversationId,
                 contactId,
-                text: pipelineResult.customerResponse,
+                text: actionPipelineResult.customerResponse,
                 aiGenerated: true,
-              })
+              });
+              await markMessageReplied(db, conversationId, inboundMessageId);
             }
-            return
+            return;
           }
 
-          // If action pipeline resolved a specific grounded response
-          if (pipelineResult.customerResponse) {
+          // ONLY send direct action response if an actual real Google Calendar booking or reschedule was executed
+          const isConfirmedCalendarEvent =
+            (actionPipelineResult.calendarResult?.action === 'book_appointment' && actionPipelineResult.calendarResult.success) ||
+            (actionPipelineResult.calendarResult?.action === 'reschedule_appointment' && actionPipelineResult.calendarResult.success);
+
+          if (isConfirmedCalendarEvent && actionPipelineResult.customerResponse) {
             const { data: claimed, error: claimErr } = await db.rpc('claim_ai_reply_slot', {
               conversation_id: conversationId,
               max_replies: config.autoReplyMaxPerConversation,
-            })
+            });
             if (claimed === true && !claimErr) {
               await engineSendText({
                 accountId,
                 userId: configOwnerUserId,
                 conversationId,
                 contactId,
-                text: sanitizeCustomerResponse(pipelineResult.customerResponse),
+                text: sanitizeCustomerResponse(actionPipelineResult.customerResponse),
                 aiGenerated: true,
-              })
+              });
+
+              await markMessageReplied(db, conversationId, inboundMessageId);
+
+              await persistConversationState(db, accountId, contactId, conversationId, {
+                lastBotMessage: actionPipelineResult.customerResponse,
+              });
 
               logDecision('AI_RESPONDED', {
                 conversationId,
                 accountId,
-                action: 'action_pipeline_responded',
-                product: pipelineResult.productKey,
-              })
-              return
+                action: 'calendar_booking_confirmed',
+                product: actionPipelineResult.productKey,
+              });
+              return;
             }
           }
         }
       } catch (actionErr) {
-        console.warn('[ai auto-reply] action pipeline non-fatal error, falling back to LLM:', actionErr)
+        console.warn('[ai auto-reply] action pipeline non-fatal error, falling back to LLM:', actionErr);
       }
     }
 
     // Show customer "typing…" while generating reply
     if (inboundMessageId) {
-      await showTypingIndicator(db, accountId, inboundMessageId)
+      await showTypingIndicator(db, accountId, inboundMessageId);
     }
 
-    // Ground the reply in the account's knowledge base (best-effort).
+    const persistedState = await getPersistedConversationState(db, conversationId);
+
+    // Ground the reply in the account's knowledge base using contextual retrieval for short replies
+    const retrievalQuery = buildContextualRetrievalQuery({
+      latestUserText: latestUserMessage(messages),
+      messages,
+      currentTopic: (persistedState?.selectedProducts?.[0] || persistedState?.productKey) ?? null,
+      selectedProducts: persistedState?.selectedProducts,
+    });
+
     const knowledge = await retrieveKnowledge(
       db,
       accountId,
       config,
-      latestUserMessage(messages),
-    )
+      retrievalQuery,
+    );
 
     const tenantAiContext = await buildTenantAiSystemPrompt(
       db,
@@ -279,17 +308,24 @@ export async function dispatchInboundToAiReply(
       config.systemPrompt,
     );
 
+    // If calendar slots were looked up, supply them as grounded context for the LLM
+    let calendarContext = '';
+    if (actionPipelineResult?.calendarResult?.action === 'get_available_slots' && actionPipelineResult.calendarResult.slots?.length) {
+      const slotList = actionPipelineResult.calendarResult.slots.map((s) => `• ${s.humanText}`).join('\n');
+      calendarContext = `\n\n[AVAILABLE APPOINTMENT SLOTS FROM CALENDAR]:\n${slotList}\nPlease offer these specific slots politely and ask the customer which one works best for them.`;
+    }
+
     const systemPrompt = buildSystemPrompt({
-      userPrompt: tenantAiContext.systemPrompt,
+      userPrompt: tenantAiContext.systemPrompt + calendarContext,
       mode: 'auto_reply',
       knowledge,
-    })
+    });
 
     const { text, handoff, usage } = await generateReply({
       config,
       systemPrompt,
       messages,
-    })
+    });
 
     void logAiUsage(db, {
       accountId,
@@ -298,27 +334,93 @@ export async function dispatchInboundToAiReply(
       provider: config.provider,
       model: config.model,
       usage,
-    })
+    });
 
     if (handoff || !text) {
       logDecision('AI_NO_RESPONSE', {
         conversationId,
         accountId,
         reason: 'model_handoff',
-      })
+      });
       const summary = buildHandoffSummary({
         messages,
         replyCount: conv.ai_reply_count ?? 0,
-      })
+      });
       const update: Record<string, unknown> = {
         ai_autoreply_disabled: true,
         ai_handoff_summary: summary,
-      }
+      };
       if (config.handoffAgentId && !conv.assigned_agent_id) {
-        update.assigned_agent_id = config.handoffAgentId
+        update.assigned_agent_id = config.handoffAgentId;
       }
-      await db.from('conversations').update(update).eq('id', conversationId)
-      return
+      await db.from('conversations').update(update).eq('id', conversationId);
+      return;
+    }
+
+    // Validate the generated reply against anti-repetition and anti-hallucination guardrails
+    const lastAssistantMsg = messages.filter((m) => m.role === 'assistant').pop()?.content;
+    let effectiveText = text;
+    let validation = validateReplyOutput({
+      draftText: effectiveText,
+      lastBotMessage: lastAssistantMsg,
+      tenantProducts: tenantCatalogue,
+      toolResults: actionPipelineResult?.calendarResult,
+      knowledgeExcerpts: knowledge,
+    });
+
+    if (!validation.isValid && validation.isRepetition) {
+      console.info('[ai auto-reply] repetition detected, regenerating next step...');
+      const retrySystemPrompt = `${systemPrompt}\n\n[CRITICAL]: Your previous draft repeated the prior message: "${lastAssistantMsg}". Do NOT repeat that message or question. Advance the conversation forward by addressing the user's latest statement and guiding them to the next step.`;
+      const retryResult = await generateReply({
+        config,
+        systemPrompt: retrySystemPrompt,
+        messages,
+      });
+
+      if (retryResult.text && !retryResult.handoff) {
+        const retryValidation = validateReplyOutput({
+          draftText: retryResult.text,
+          lastBotMessage: lastAssistantMsg,
+          tenantProducts: tenantCatalogue,
+          toolResults: actionPipelineResult?.calendarResult,
+          knowledgeExcerpts: knowledge,
+        });
+
+        if (retryValidation.isValid) {
+          effectiveText = retryResult.text;
+          validation = retryValidation;
+        }
+      }
+    }
+
+    if (!validation.isValid) {
+      console.warn('[ai auto-reply] validateReplyOutput rejected reply:', validation.reason);
+      logDecision('AI_NO_RESPONSE', {
+        conversationId,
+        accountId,
+        reason: 'validation_failed',
+      });
+      const update: Record<string, unknown> = {
+        ai_autoreply_disabled: true,
+        ai_handoff_summary: `AI output rejected by validation: ${validation.reason || 'Guardrail violation'}`,
+      };
+      if (config.handoffAgentId && !conv.assigned_agent_id) {
+        update.assigned_agent_id = config.handoffAgentId;
+      }
+      await db.from('conversations').update(update).eq('id', conversationId);
+
+      const fallbackMsg = config.fallback_message || DEFAULT_NEUTRAL_FALLBACK_MESSAGE;
+      await engineSendText({
+        accountId,
+        userId: configOwnerUserId,
+        conversationId,
+        contactId,
+        text: fallbackMsg,
+        aiGenerated: true,
+      });
+
+      await markMessageReplied(db, conversationId, inboundMessageId);
+      return;
     }
 
     // Atomically claim a reply slot
@@ -328,15 +430,15 @@ export async function dispatchInboundToAiReply(
         conversation_id: conversationId,
         max_replies: config.autoReplyMaxPerConversation,
       },
-    )
+    );
     if (claimErr) {
       logDecision('AI_NO_RESPONSE', {
         conversationId,
         accountId,
         reason: 'claim_rpc_failed',
-      })
-      console.error('[ai auto-reply] claim_ai_reply_slot failed:', claimErr)
-      return
+      });
+      console.error('[ai auto-reply] claim_ai_reply_slot failed:', claimErr);
+      return;
     }
     if (claimed !== true) {
       logDecision('AI_REPLY_LIMIT_REACHED', {
@@ -344,15 +446,15 @@ export async function dispatchInboundToAiReply(
         accountId,
         maxReplies: config.autoReplyMaxPerConversation,
         reason: 'claim_slot_exhausted',
-      })
+      });
       await db
         .from('conversations')
         .update({
           ai_autoreply_disabled: true,
           ai_handoff_summary: `AI reply limit reached (${config.autoReplyMaxPerConversation} replies max).`,
         })
-        .eq('id', conversationId)
-      return
+        .eq('id', conversationId);
+      return;
     }
 
     await engineSendText({
@@ -360,11 +462,17 @@ export async function dispatchInboundToAiReply(
       userId: configOwnerUserId,
       conversationId,
       contactId,
-      text: sanitizeCustomerResponse(text),
+      text: sanitizeCustomerResponse(effectiveText),
       aiGenerated: true,
-    })
+    });
 
-    logDecision('AI_RESPONDED', { conversationId, accountId })
+    await markMessageReplied(db, conversationId, inboundMessageId);
+
+    await persistConversationState(db, accountId, contactId, conversationId, {
+      lastBotMessage: effectiveText,
+    });
+
+    logDecision('AI_RESPONDED', { conversationId, accountId });
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
   }
@@ -392,5 +500,22 @@ async function showTypingIndicator(
     })
   } catch (err) {
     console.warn('[ai auto-reply] typing indicator failed (continuing):', err)
+  }
+}
+
+async function markMessageReplied(
+  db: ReturnType<typeof supabaseAdmin>,
+  conversationId: string,
+  inboundMessageId?: string,
+): Promise<void> {
+  if (!inboundMessageId) return;
+  try {
+    await db
+      .from('messages')
+      .update({ processing_status: 'replied', updated_at: new Date().toISOString() })
+      .eq('conversation_id', conversationId)
+      .eq('message_id', inboundMessageId);
+  } catch (err) {
+    console.warn('[ai auto-reply] markMessageReplied non-fatal error:', err);
   }
 }

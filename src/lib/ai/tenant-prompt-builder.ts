@@ -33,7 +33,7 @@ export async function buildTenantAiSystemPrompt(
   const profile = await getTenantBusinessProfile(db, accountId);
   const products = await getTenantProducts(db, accountId, {
     onlyEnabled: true,
-    fallbackToSeedIfGeniplus: true,
+    fallbackToSeedIfGeniplus: false,
   });
 
   const parts: string[] = [];
@@ -100,11 +100,11 @@ export async function buildTenantAiSystemPrompt(
   // 3. Scheduling & Meeting Guidelines
   parts.push(
     `### Scheduling & Booking Rules:\n` +
-    `- For kids/children programs: warmly explain the course benefits using the Knowledge Base and Configured Services. When the customer wants to schedule, confirm their preferred day & time, and ask for: 1. Parent's name, 2. Child's name, 3. Email ID (for Google Calendar invite, or note that we can add to calendar with WhatsApp number if they don't have an email).\n` +
-    `- For adult or business services: ask for their name, preferred day & time, and email ID (or note we can book without email if preferred).\n` +
+    `- When a customer wants to schedule an appointment or demo: confirm their preferred day and time, and collect their name and email (or note that we can schedule without an email if they prefer).\n` +
+    `- If the selected service has specific required fields, ask for those details naturally.\n` +
     `- Once preferred date, time, and attendee name are provided, our integrated system automatically schedules the session on Google Calendar.\n` +
     `- NEVER invent or promise an unverified Google Meet or Zoom link unless confirmed by the booking system.\n` +
-    `- If the customer asks about curriculum, age suitability, fees, or class/batch timings, reply strictly using the Knowledge Base excerpts and Configured Services.`
+    `- If the customer asks about curriculum, fees, batch timings, or guarantees, reply strictly using the Knowledge Base excerpts and Configured Services. If the information is not in the Knowledge Base, politely say you will confirm with the team and offer human assistance (${HANDOFF_SENTINEL}), NEVER invent or guess details.`
   );
 
   // 4. FAQs and Policies

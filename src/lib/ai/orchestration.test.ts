@@ -34,6 +34,7 @@ vi.mock('@/lib/ai/context', () => ({
 
 vi.mock('@/lib/ai/knowledge', () => ({
   retrieveKnowledge: h.retrieveKnowledge,
+  buildContextualRetrievalQuery: (query: string) => query,
 }))
 
 vi.mock('@/lib/ai/generate', () => ({
@@ -62,26 +63,32 @@ vi.mock('@/lib/rate-limit', () => ({
 vi.mock('@/lib/ai/admin-client', () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
-      if (table === 'conversations') {
-        return {
-          select: () => ({
-            eq: () => ({
-              maybeSingle: () =>
-                Promise.resolve({ data: h.state.conv, error: null }),
-            }),
+      const chain: any = {
+        select: () => chain,
+        eq: () => chain,
+        in: () => chain,
+        order: () => chain,
+        limit: () => chain,
+        single: () => Promise.resolve({ data: null, error: null }),
+        maybeSingle: () =>
+          Promise.resolve({
+            data: table === 'conversations' ? h.state.conv : null,
+            error: null,
           }),
-          update: (payload: Record<string, unknown>) => {
+        update: (payload: Record<string, unknown>) => {
+          if (table === 'conversations') {
             h.state.updatePayload = payload
-            return {
-              eq: () => Promise.resolve({ error: null }),
-            }
-          },
-        }
-      }
-      return {
-        select: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }),
+          }
+          return chain
+        },
         insert: () => Promise.resolve({ error: null }),
+        then: (resolve: any) =>
+          resolve({
+            data: table === 'conversations' ? h.state.conv : [],
+            error: null,
+          }),
       }
+      return chain
     },
     rpc: (name: string, args: unknown) => {
       h.state.rpcCalls.push({ name, args })

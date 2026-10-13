@@ -33,6 +33,8 @@ export interface AiConfig {
   productConfigs?: Record<string, unknown> | null
   scoringRules?: Record<string, number> | null
   routingRules?: Record<string, unknown> | null
+  fallback_message?: string | null
+  handoff_message?: string | null
 }
 
 /** A single conversation turn in the shape both providers accept. */

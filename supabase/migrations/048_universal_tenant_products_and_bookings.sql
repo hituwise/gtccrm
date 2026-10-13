@@ -170,3 +170,9 @@ BEGIN
     ON CONFLICT (account_id, product_service_id) DO NOTHING;
   END IF;
 END $$;
+
+-- 6. Booking Idempotency Unique Constraint
+-- Prevents race conditions and duplicate concurrent bookings for the exact same contact, product and slot
+CREATE UNIQUE INDEX IF NOT EXISTS uq_calendar_bookings_exact_slot
+  ON public.calendar_bookings (account_id, contact_id, start_time, COALESCE(product_service_id, ''))
+  WHERE status = 'confirmed';

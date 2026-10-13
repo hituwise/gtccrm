@@ -101,6 +101,15 @@ export interface TenantProductConfig {
   };
   followUpRules?: Record<string, unknown>;
   keywords?: string[];
+  aliases?: string[];
+  negativeKeywords?: string[];
+  customPrompts?: {
+    askDate?: string;
+    askTime?: string;
+    askName?: string;
+    askEmail?: string;
+  };
+  scheduleMessageTemplate?: string;
   // Legacy backward compatibility fields
   productKey?: string;
   tagName?: string;
@@ -322,6 +331,7 @@ export const GENIPLUS_SEED_PRODUCTS: Record<string, TenantProductConfig> = {
       'student and fee management',
       'maa',
     ],
+    negativeKeywords: ['franchise', 'franchisee'],
   },
   LEAD_PILOT: {
     productServiceId: 'LEAD_PILOT',

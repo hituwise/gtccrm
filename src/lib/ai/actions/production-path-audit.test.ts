@@ -87,6 +87,7 @@ vi.mock('@/lib/calendar/google-calendar', () => ({
     { startTime: '2026-10-10T14:00:00.000Z', endTime: '2026-10-10T14:45:00.000Z', humanText: '2:00 PM IST' },
   ]),
   testGoogleCalendarConnection: vi.fn().mockResolvedValue({ success: true, email: 'service-account@test.iam.gserviceaccount.com' }),
+  computeDeterministicCalendarEventId: vi.fn().mockReturnValue('mock-det-id'),
 }));
 
 vi.mock('@/lib/whatsapp/send', () => ({

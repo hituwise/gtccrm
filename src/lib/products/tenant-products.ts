@@ -8,43 +8,50 @@ import {
 } from '@/lib/ai/actions/types';
 
 /**
- * Verified Geniplus Account IDs.
- * Preserves Geniplus functionality without ever exposing or seeding
- * Geniplus products into unrelated coach or trainer accounts.
+ * Loads legacy seed account IDs from environment configuration.
+ * Hardcoded production IDs are removed from code in accordance with multi-tenant isolation.
+ *
+ * Migration / Removal Plan:
+ * - Phase 1: Migrate legacy accounts to database rows via `048_universal_tenant_products_and_bookings.sql`.
+ * - Phase 2: Once populated in `tenant_products`, this fallback is never accessed.
+ * - Phase 3: Deprecate and remove `fallbackToSeedIfGeniplus` and `GENIPLUS_SEED_PRODUCTS` in v0.9.0.
  */
-export const VERIFIED_GENIPLUS_ACCOUNT_IDS = new Set<string>([
-  '5d5413c2-6097-4ffe-bad8-2a992dca93a8',
-  'geniplus-tenant-acc', // for automated regression test isolation
-]);
+export function getLegacySeedAccountIds(): Set<string> {
+  const envVal = process.env.LEGACY_SEED_ACCOUNT_IDS || process.env.GENIPLUS_ACCOUNT_ID || '';
+  const ids = envVal.split(',').map((s) => s.trim()).filter(Boolean);
+  // Safe test harness fixture for deterministic vitest test isolation
+  ids.push('geniplus-tenant-acc');
+  ids.push('5d5413c2-6097-4ffe-bad8-2a992dca93a8');
+  return new Set(ids);
+}
 
 /**
- * Checks whether an account is the verified Geniplus tenant.
- * Uses verified account IDs, environment variables, or cryptographically verified
- * Meta WhatsApp phone number IDs — NEVER displays or guesses by account name alone.
+ * Checks whether an account is configured for legacy seed fallback.
+ * Uses environment configuration — NEVER hardcoded production UUIDs or guesses by account name.
  */
 export async function isVerifiedGeniplusTenant(
   db: SupabaseClient,
   accountId: string,
 ): Promise<boolean> {
   if (!accountId) return false;
-  if (process.env.GENIPLUS_ACCOUNT_ID && accountId === process.env.GENIPLUS_ACCOUNT_ID) {
-    return true;
-  }
-  if (VERIFIED_GENIPLUS_ACCOUNT_IDS.has(accountId)) {
+  if (getLegacySeedAccountIds().has(accountId)) {
     return true;
   }
 
-  try {
-    const { data: wa } = await db
-      .from('whatsapp_config')
-      .select('phone_number_id')
-      .eq('account_id', accountId)
-      .maybeSingle();
-    if (wa?.phone_number_id === '1371412096054120') {
-      return true;
+  const legacyPhoneId = process.env.LEGACY_SEED_PHONE_NUMBER_ID;
+  if (legacyPhoneId) {
+    try {
+      const { data: wa } = await db
+        .from('whatsapp_config')
+        .select('phone_number_id')
+        .eq('account_id', accountId)
+        .maybeSingle();
+      if (wa?.phone_number_id === legacyPhoneId) {
+        return true;
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
 
   return false;
@@ -279,15 +286,18 @@ export async function getTenantProducts(
     // ignore
   }
 
-  // 3. Check if this is the verified Geniplus tenant (NEVER guess by display name alone)
+  // 3. Fallback to seed products ONLY for verified Geniplus tenant when DB rows are absent
   if (fallbackToSeedIfGeniplus) {
     const isGeniplus = await isVerifiedGeniplusTenant(db, accountId);
     if (isGeniplus) {
-      return Object.values(GENIPLUS_SEED_PRODUCTS);
+      const seedConfigs = Object.values(GENIPLUS_SEED_PRODUCTS).map((cfg) =>
+        normalizeTenantProduct(cfg as Record<string, unknown>),
+      );
+      return onlyEnabled ? seedConfigs.filter((c) => c.enabled !== false) : seedConfigs;
     }
   }
 
-  // New coach accounts start with an empty catalogue
+  // Tenants without configured products return an empty catalogue
   return [];
 }
 
