@@ -813,7 +813,7 @@ async function processMessage(
   // ONLY on a genuine first insert — an empty result means this delivery
   // was a replay. This is the single idempotency boundary that must sit
   // BEFORE the unread bump and all downstream fan-out below (issue #367).
-  const { data: insertedRows, error: msgError } = await supabaseAdmin()
+  let { data: insertedRows, error: msgError } = await supabaseAdmin()
     .from('messages')
     .upsert(
       {
@@ -834,6 +834,55 @@ async function processMessage(
     )
     .select('id')
 
+  // Fallback 1: If processing_status column has not yet been migrated (migration 050 pending)
+  if (msgError && (msgError.message?.includes('processing_status') || msgError.code === 'PGRST204')) {
+    console.warn('[webhook] processing_status column not yet migrated; retrying insert without it')
+    const retry = await supabaseAdmin()
+      .from('messages')
+      .upsert(
+        {
+          conversation_id: conversation.id,
+          sender_type: 'customer',
+          content_type: contentType,
+          content_text: contentText,
+          media_url: mediaUrl,
+          media_type: mediaType,
+          message_id: message.id,
+          status: 'delivered',
+          created_at: new Date(parseInt(message.timestamp) * 1000).toISOString(),
+          reply_to_message_id: replyToInternalId,
+          interactive_reply_id: interactiveReplyId,
+        },
+        { onConflict: 'conversation_id,message_id', ignoreDuplicates: true }
+      )
+      .select('id')
+    insertedRows = retry.data
+    msgError = retry.error
+  }
+
+  // Fallback 2: If onConflict arbiter fails due to missing unique index in DB
+  if (msgError && (msgError.code === '42P10' || msgError.message?.includes('ON CONFLICT'))) {
+    console.warn('[webhook] onConflict index not found; retrying with plain insert')
+    const retryInsert = await supabaseAdmin()
+      .from('messages')
+      .insert({
+        conversation_id: conversation.id,
+        sender_type: 'customer',
+        content_type: contentType,
+        content_text: contentText,
+        media_url: mediaUrl,
+        media_type: mediaType,
+        message_id: message.id,
+        status: 'delivered',
+        created_at: new Date(parseInt(message.timestamp) * 1000).toISOString(),
+        reply_to_message_id: replyToInternalId,
+        interactive_reply_id: interactiveReplyId,
+      })
+      .select('id')
+    insertedRows = retryInsert.data
+    msgError = retryInsert.error
+  }
+
   if (msgError) {
     console.error('Error inserting message:', msgError)
     return
@@ -846,12 +895,26 @@ async function processMessage(
   // - If 'replied' or actively 'processing' (< 3 min), short-circuit immediately.
   // - If 'failed' or crashed after insert, do NOT swallow: resume processing.
   if (!insertedRows || insertedRows.length === 0) {
-    const { data: existingRow } = await supabaseAdmin()
+    const { data: existingRow, error: selectErr } = await supabaseAdmin()
       .from('messages')
       .select('id, processing_status, updated_at')
       .eq('conversation_id', conversation.id)
       .eq('message_id', message.id)
       .maybeSingle()
+
+    // Fallback if processing_status column is missing
+    if (selectErr && selectErr.code === 'PGRST204') {
+      const { data: fallbackRow } = await supabaseAdmin()
+        .from('messages')
+        .select('id')
+        .eq('conversation_id', conversation.id)
+        .eq('message_id', message.id)
+        .maybeSingle()
+      if (fallbackRow) {
+        console.info('[webhook] duplicate inbound message short-circuits:', message.id)
+        return
+      }
+    }
 
     if (existingRow) {
       const isReplied = existingRow.processing_status === 'replied'
@@ -885,10 +948,14 @@ async function processMessage(
   }
 
   if (messageInternalId) {
-    await supabaseAdmin()
-      .from('messages')
-      .update({ processing_status: 'processing', updated_at: new Date().toISOString() })
-      .eq('id', messageInternalId)
+    try {
+      await supabaseAdmin()
+        .from('messages')
+        .update({ processing_status: 'processing', updated_at: new Date().toISOString() })
+        .eq('id', messageInternalId)
+    } catch {
+      // Non-fatal if processing_status is not yet migrated
+    }
   }
 
   // Update conversation. The unread bump is done DB-side (migration 037's
@@ -907,7 +974,20 @@ async function processMessage(
   )
 
   if (convError) {
-    console.error('Error updating conversation:', convError)
+    console.error('Error updating conversation via RPC:', convError)
+    // Fallback if RPC is missing: direct update ensures message timestamp & preview appear in inbox!
+    try {
+      await supabaseAdmin()
+        .from('conversations')
+        .update({
+          last_message_text: contentText || `[${message.type}]`,
+          last_message_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', conversation.id)
+    } catch (fallbackErr) {
+      console.error('Direct conversation update error:', fallbackErr)
+    }
   }
 
   // A customer writing again re-opens the thread (issue #409). Kept as a

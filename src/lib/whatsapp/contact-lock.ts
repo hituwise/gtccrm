@@ -127,6 +127,21 @@ async function executeWithDistributedLock<T>(
               dbLockAcquired = true;
               break;
             }
+
+            // If table also doesn't exist (migration 049 not yet run), fall back immediately
+            if (
+              upsertErr &&
+              (upsertErr.code === '42P01' ||
+                upsertErr.code === 'PGRST205' ||
+                upsertErr.code === 'PGRST204' ||
+                upsertErr.message?.includes('does not exist'))
+            ) {
+              console.warn(
+                '[contact-lock] contact_locks table not found in database. Falling back to in-process lock to avoid message loss.',
+              );
+              dbLockAcquired = true;
+              break;
+            }
           }
         } catch {
           // Retry on intermittent DB error
@@ -137,6 +152,7 @@ async function executeWithDistributedLock<T>(
       }
 
       // If retry budget exhausted without acquiring distributed lock, do NOT drop message!
+      // In serverless after() block, throwing drops the message forever because Meta already got 200 OK.
       if (!dbLockAcquired) {
         throw new ContactLockAcquisitionError(
           key,
